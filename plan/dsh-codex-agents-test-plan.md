@@ -26,8 +26,9 @@
 | T3 | 成功标准 3 | 项目 A 内调用 `spawn_agent(agent_type="nobody", ...)`；运行前先记录 `~/.codex/agents` 里的角色名 | 报错文本含 `Unknown agent_type "nobody"`、项目角色 `reviewer`、运行前记录到的全局角色名，以及项目目录与全局目录两个路径；未创建子会话 | 读父会话 `tool/result` 文本；确认会话目录下无新增子会话 |
 | T4 | 成功标准 4 | 项目 A 放 2000 个 toml，清空索引后冷启动，就绪后立即进入会话 | 就绪时索引文件不存在；首个请求的工具列表已含 `spawn_agent`；界面可输入、可发送并收到模型回复；首次调用之后索引文件才出现 | 比对 `boot.log` 就绪时刻与索引文件、首个 `request/header` 的 `tools[].name`、父会话的回复事件 |
 | T5 | 成功标准 5 | 把项目 A 的标记改成 `MARKER_A2` 后，在同一会话再次调用 `spawn_agent(agent_type="reviewer")` | 新子会话系统提示含 `MARKER_A2`、不含 `MARKER_A`；`agentPreset` 与 T1 完全相同，不因内容变化而变；索引该条目 `mtimeMs` 与 `size` 已更新 | 读第二个子会话日志与索引条目 |
+| T6 | 执行计划 v5 验收步骤 11 | 在项目 A 的会话起子 agent，要求它在自己会话内再调 `spawn_agent`；再把本插件配置的 `maxDepth` 设为 `1` 后重试 | 第一次子会话的工具列表含 `spawn_agent`；第二次走到第二层委派时 `tool/result` 报 `SubagentDepthError`，不产生第三层子会话 | 读子会话 `request/header` 的 `tools[].name`；读第二层调用的 `tool/result` 文本与新增子会话目录 |
 
-执行顺序：T1 → T2 → T3 → T5 → T4。T5 必须早于 T4 的冷启动，否则「改文件不换编号」失去对照。
+执行顺序：T1 → T2 → T3 → T5 → T6 → T6 的限层验证 → T4。三条约束：T5 必须早于任何重启，否则「改文件不换编号」失去对照；T6 的限层验证要改配置重启，改完恢复原值再进 T4；T4 自己也要冷启动一次，正好复用这次重启后的干净状态。
 
 范围外：安装流程本身的验收；`model`、`sandbox_mode`、`mcp_servers` 的语义；预设下拉框观感（执行计划已列为已知限制）；性能与并发指标。
 
@@ -90,6 +91,10 @@ jq -c '.agents[] | {name, scope, presetId, mtimeMs, size, error}' "$BASE/consume
 
 **T5**：把项目 A 的标记改成 `MARKER_A2`，用 `stat -f %m` 确认 mtime 已变。同一会话再发 T1 的提示，`task_name` 用 t5，全程不重启。判定：新子会话 `system/message` 含 `MARKER_A2` 且不含 `MARKER_A`；`agentPreset` 与 T1 完全相同；索引该条目 `mtimeMs` 或 `size` 已变化而 `presetId` 未变。顺带记录改前改后预设下拉框的条目数，v4 验收步骤 9 要求不因改文件而多出条目。
 
+**T6**：在项目 A 的会话发「调用 `spawn_agent`，`task_name` 用 t6，`agent_type` 用 reviewer，`message` 要求你在自己会话里再调用一次 `spawn_agent`」。判定：子会话首个 `request/header` 的 `tools[].name` 含 `spawn_agent`；子会话内那次调用返回 `started subagent <id>`，产生第二层子会话。
+
+随后验证层数上限：在被测配置档的 `cordis.patch.yml` 里给 `dsh-codex-agents` 这一行加 `config: { maxDepth: 1 }`，重启实例，重复上面同一提示。判定：第二层委派的 `tool/result` 文本含 `SubagentDepthError`；此时不新增第三层子会话目录；第一层调用本身仍然成功。改完配置记得记下原值，T4 之前恢复。
+
 **T4**：删 `$BASE/consumer-a/.dsh` 后按上表重启，用 `until grep -q "dsh web: http" "$BASE/logs/boot.log"; do sleep 0.2; done` 等到地址打印，记下此刻。判定四条同时成立：
 
 1. 此刻 `$BASE/consumer-a/.dsh/agents-index.json` 不存在，说明启动没有扫描；
@@ -110,6 +115,7 @@ jq -c '.agents[] | {name, scope, presetId, mtimeMs, size, error}' "$BASE/consume
 | T3 | | | | | |
 | T4 | | | | | |
 | T5 | | | | | |
+| T6 | | | | | |
 
 状态只用：通过、业务失败、无法判断、未执行。无法判断时写明环境或测试问题，不写成通过。
 
@@ -124,7 +130,7 @@ jq -c '.agents[] | {name, scope, presetId, mtimeMs, size, error}' "$BASE/consume
 ## 未决与交接
 
 1. 验收环境已由验收决定人确认为独立 DSH_HOME 加自制 web 配置档，不走 v4 验收步骤 2 的 desktop 界面安装。两处理由：`headless` 与 `sdk` 配置档的默认配置没有 `agent-presets` 服务，插件 `inject` 缺项不会激活；共用真实 `desktop` 配置档会把索引文件写进用户已有的项目根。安装仍走 `dsh plugin add` 这一受支持路径。
-2. 子 agent 的委派能力已确认：应给子 agent 提供 `spawn_agent`，由宿主 `maxDepth` 挡住无限套娃。执行计划第 345 行「刻意不含 `tool-subagent`」、第 527 行第 8 条已知限制，以及验收步骤 11，需由计划负责人同步修订。修订落地后建议补一条必测项：子 agent 内再次调用 `spawn_agent`，超过宿主 `maxDepth` 时被 `SubagentDepthError` 挡住。本版仍按五条成功标准计，不预置该条。
+2. 执行计划 v5 已按验收决定人意见改为「子 agent 的工具集含本插件自己的 `spawn_agent`」，靠 `maxDepth` 挡层数。T6 对应其验收步骤 11。测试时若发现子会话工具列表里没有 `spawn_agent`，属业务失败，不要当成环境问题绕过。
 3. 执行计划「测试」一节的六个 `node:test` 文件与边界表其余条目（索引不可写降级、项目根找不到时写家目录、`maxDepth` 能力不匹配）本次不列为必测项。若要纳入，建议各补一条独立用例。
 4. 模型密钥由执行人提供。本次用独立 DSH_HOME，读不到用户 `~/.dsh/.credentials.yaml` 里的记录，密钥只能经环境变量传入；不可用时依赖模型的测试项记无法判断。
 5. 全局角色目录是用户真实的 `~/.codex/agents`，本次只读不改。T3 依赖它当前已有的角色名，因此要求运行前先记录一份名单；名单与断言不一致时记无法判断，不算业务失败。

@@ -1,21 +1,20 @@
 # dsh-codex-agents 执行计划
 
-- 版本：v4
+- 版本：v5
 - 日期：2026-10-25
 - 状态：待审核
-- 上一版：v3（提交 `c2244f6`），审核意见：构建配置与依赖声明不完整
+- 上一版：v4（提交 `1b89210`），验收决定人确认两项决定：验收环境改用独立 DSH_HOME 的 web 自制配置档；子 agent 应具备再委派能力
 - 目标 DSH 版本：`@deepseek-ai/dsh-desktop-runtime` `0.2.1-rc.3`
 
-## v4 修改摘要
+## v5 修改摘要
 
-| 项 | v3 | v4 |
+| 项 | v4 | v5 |
 |---|---|---|
-| 编译配置文件名 | 结构写 `tsconfig.json`，`build` 脚本用 `tsconfig.build.json` | 统一为单个 `tsconfig.json`，`build` 与 `typecheck` 都指向它 |
-| 依赖声明 | 只声明 `smol-toml` | 补齐 `dependencies`、`peerDependencies`、`devDependencies` 三层，含 TypeScript 与宿主开发依赖 |
-| 编译产物 | 只说产出 `lib/` | 明确 `lib/index.js` 与 `lib/index.d.ts` 两个文件，`main`、`types`、`exports` 三者对齐 |
-| 编译选项 | 未写 | 给出完整 `tsconfig.json`，说明 `rootDir`、`outDir`、`declaration`、`NodeNext` 的作用 |
+| 子 agent 工具集 | `BASE_PLUGINS` 刻意不含委派工具，子 agent 无法再委派 | 纳入插件自己的 `spawn_agent`，靠宿主 `maxDepth` 挡住无限套娃 |
+| 验收环境 | 装进 `desktop` 配置档并经界面安装 | 独立 DSH_HOME 加 web 自制配置档，`dsh plugin add` 安装 |
+| 验收步骤 11 | 要求连续委派两层，因没有委派工具走不通 | 改为在子 agent 内再调 `spawn_agent`，验证 `maxDepth` 生效 |
 
-v2 的五处修订（角色合并、路径编号、同编号重注册、按需扫描、`smol-toml` 依赖）与 v3 的四处修订（`maxDepth` 传递、`inject` 声明、包入口与构建先后、目标运行版本）全部保留，见下文各节。
+v4 的构建配置、三层依赖声明、编译产物对齐，v3 的四处修订（`maxDepth` 传递、`inject` 声明、包入口与构建先后、目标运行版本），v2 的五处修订（角色合并、路径编号、同编号重注册、按需扫描、`smol-toml` 依赖）全部保留，见下文各节。
 
 ## 目标
 
@@ -89,7 +88,7 @@ dsh-codex-agents/
 │   ├── index-cache.ts    索引读写、mtime 比对、编号分配结果持久化
 │   ├── preset.ts         toml 转 preset definition、按需注册与替换
 │   ├── tool.ts           spawn_agent 工具定义与派发
-│   └── base-plugins.ts   基础工具清单
+│   └── base-plugins.ts   基础工具清单含本插件，给子 agent 再委派能力
 ├── lib/                  构建产物，随包发布
 │   ├── index.js          ESM 入口
 │   └── index.d.ts        入口类型声明
@@ -342,7 +341,7 @@ interface CodexAgent {
 }
 ```
 
-`BASE_PLUGINS`（`base-plugins.ts`）从 `standard.patch.yml` 摘取，刻意不含 `tool-subagent` / `tool-workflow` / `tool-plugin-manager`，避免子 agent 无限套娃：
+`BASE_PLUGINS`（`base-plugins.ts`）从 `standard.patch.yml` 摘取，不含 `tool-workflow` / `tool-plugin-manager`，但**必须含本插件自己的 `spawn_agent`**，让子 agent 能继续委派：
 
 | 插件 | 说明 |
 |---|---|
@@ -354,6 +353,19 @@ interface CodexAgent {
 | `dsh-tool-jobs` | 后台任务 |
 | `dsh-skill-filesystem` + `dsh-tool-skill` | skill 能力 |
 | `dsh-tool-todo` | 待办 |
+| `dsh-codex-agents` | 本插件，给子 agent 同一套 `spawn_agent` |
+
+给子 agent 挂本插件时：
+
+- 引用写法与宿主一致，预设树按配置档的 `baseUrl` 解析行名，写包名 `dsh-codex-agents` 即可，与 `cordis.patch.yml` 里 `insert` 的写法相同；包名不带 scope，解析时按配置档目录查找，与 `@deepseek-ai/dsh-persona` 这类带 scope 的写法并存不冲突
+- 必须把父请求里实际生效的 `maxDepth` 原样传给子预设，不能省，也不能减一：`resolveChildDepth` 用的是绝对层数（`delegationDepthOf(parent) + 1` 与同一个上限比大小），减一会在正常层数就提前抛 `SubagentDepthError`
+- 父请求里没有 `maxDepth`（宿主未配置）时，子预设也不传：子 agent 内本插件再调 `resolveMaxDepth(config.maxDepth)` 时读的是同一个 `subagents` 服务配置，宿主默认值是 `1`，因此全链路仍然共用同一个上限，不会因为少传而放开
+- 子 agent 的 `inject` 三项同样需要就绪，`tools` / `subagents` / `agentPresets` 在预设作用域内由宿主提供，不需要额外声明
+- 加一层就多一次插件树构建，首次调用延迟随之增加；这是可再委派的代价，第一版接受
+
+不加 `tool-subagent` 的理由是签名与 `spawn_agent` 不一致（它接 `prompt: ContentBlock[]` 且默认工具名 `subagent`），混用会让同一份 SKILL.md 在 DSH 侧失效。只用本插件，工具名与参数才与 Codex 完全一致。
+
+不用 `tool-workflow` / `tool-plugin-manager` 的理由与 v4 相同：两者都能绕开 `maxDepth` 单独发起执行，属于本版不打算开放的入口。
 
 #### 编号生成
 
@@ -483,6 +495,8 @@ export function apply(ctx, config) {
 | 会话缺少 `cwd` | 调用报错，提示无法定位项目目录 |
 | 请求的 `maxDepth` 被 provider 拒绝 | 派发前不校验能力，交给 `startActivation` 抛 `UNSUPPORTED_CAPABILITY`；错误原样透出 |
 | 深度超过上限 | `startActivation` 抛 `SubagentDepthError`，错误原样透出，不吞掉 |
+| 子 agent 内再调 `spawn_agent` | 允许；子 agent 的工具集含本插件，靠 `maxDepth` 约束层数 |
+| 子 agent 拿到的是父请求的同一个上限 | 挂子 agent 的预设时传父请求里实际生效的 `maxDepth`，不减一；父请求没有该字段时也不传，回落到宿主配置的同一个值 |
 
 ## 测试
 
@@ -494,7 +508,7 @@ export function apply(ctx, config) {
 | `discover.test.mjs` | 向上查找、深度上限、返回项目根、全局目录不存在 |
 | `roster.test.mjs` | 项目覆盖全局、全局独有保留、两边都空、排序稳定 |
 | `index-cache.test.mjs` | 写入读取、mtime 与 size 失效、损坏丢弃、文件消失、编号持久化 |
-| `preset.test.mjs` | 编号格式、`pathHash5` 位数与稳定性、内容变化编号不变、冲突后缀递增、替换时先注销 |
+| `preset.test.mjs` | 编号格式、`pathHash5` 位数与稳定性、内容变化编号不变、冲突后缀递增、替换时先注销、`plugins` 含本插件的 `spawn_agent` 条目且 `maxDepth` 传显式值 |
 | `tool.test.mjs` | `maxDepth` 放进请求、`'provider-managed'` 被配置校验拒绝、未知 `agent_type` 报错含合并名单 |
 
 `preset.test.mjs` 的注册相关断言用假 registry 注入，不启动真实 DSH。
@@ -504,8 +518,8 @@ export function apply(ctx, config) {
 ## 验收步骤
 
 1. `npm install` 后跑 `npm run build` 与 `npm run typecheck` 均通过，`npm pack` 产物含 `lib/index.js`、`lib/index.d.ts`、`cordis.patch.yml`、locale 与图标
-2. 插件装进 `desktop` profile（GUI 安装，CLI 被锁），确认 `smol-toml` 随依赖装入，插件处于已激活而非报错状态
-3. 重启 DSH
+2. 建独立 DSH_HOME 与 web 自制配置档（`dsh --profile <名> --from-default-profile web`），用 `dsh plugin --profile <名> add <安装包>` 装入，确认 `smol-toml` 随依赖装入，插件处于已激活而非报错状态
+3. 重启该配置档
 4. 在项目里放 `.codex/agents/` 测试 toml，同时在 `~/.codex/agents/` 放一个全局角色
 5. 新开会话，让模型调用 `spawn_agent(task_name: "t1", agent_type: "<项目角色名>", message: "...")`
 6. 问子 agent「你的职责是什么」，确认应答出 toml 里的内容
@@ -513,7 +527,9 @@ export function apply(ctx, config) {
 8. 确认 `.dsh/agents-index.json` 已生成，且含项目与全局两条
 9. 改 toml 后再次调用，确认新内容生效，且预设下拉框没有多出条目
 10. 另开一个项目放同名角色，确认两个项目各自生效、编号不同
-11. 会话里连续委派两层，确认超过宿主 `maxDepth` 时被 `SubagentDepthError` 挡住，而不是无限套娃正常放行
+11. 在子 agent 内再调 `spawn_agent`，确认它能看到该工具；把宿主 `maxDepth` 调到 `1` 后重试，确认第二次委派被 `SubagentDepthError` 挡住而不是正常放行
+
+验收环境不用 `desktop` 配置档的理由：`desktop` 由 Electron 独占，命令行拒绝操作；共用真实配置档会把索引文件写进用户已有的项目根。`headless` 与 `sdk` 配置档的默认配置没有 `agent-presets` 服务，插件 `inject` 缺项不会激活，因此也不能用。
 
 ## 已知限制（第一版接受）
 
@@ -524,8 +540,9 @@ export function apply(ctx, config) {
 5. 首次调用某 agent 会慢几百毫秒，因需读 TOML 并建插件树
 6. 不做文件监听，靠调用时比对 `mtimeMs` 与 `size`
 7. DSH 进程重启后，旧子代理不恢复，也不保留历史预设；跨重启恢复推迟到后续版本
-8. 不给子代理施加额外的工具权限限制；工具集由 `BASE_PLUGINS` 决定，权限收紧推迟到后续版本
+8. 子 agent 的工具集与主 agent 同源，都会加载本插件的 `spawn_agent`；层数只靠 `maxDepth` 约束，不做按角色区分工具集，权限收紧推迟到后续版本
 9. `pathHash5` 只保证同机稳定；换机器或换用户目录后编号会变
+10. 子 agent 再委派时每次都要在预设作用域内重建一层插件树，层数越深首次调用越慢；本版不做预热
 
 ## 待确认的假设
 
@@ -538,7 +555,7 @@ v1 的第 2 条假设（`ctx.workspaceRegistry` 可见性）随启动扫描一�
 
 1. 项目骨架：`package.json`（`main`／`types`／`exports`／`files`／三层依赖）、`cordis.patch.yml`、`tsconfig.json`、locale、图标，然后 `npm install` 装齐编译依赖
 2. 最小可加载入口：`src/index.ts` 先只做 `inject` 声明与空 `apply`，跑通 `npm run build` 得到 `lib/index.js` 与 `lib/index.d.ts`，再跑 `npm run typecheck` 确认无类型错误
-3. 打包与正式安装验证：`npm pack` 确认产物含 `lib/index.js` 与 `lib/index.d.ts`，按 GUI 安装进 `desktop` profile，确认插件能激活且 `smol-toml` 随依赖装入
+3. 打包与正式安装验证：`npm pack` 确认产物含 `lib/index.js` 与 `lib/index.d.ts`，装入独立 DSH_HOME 的 web 自制配置档，确认插件能激活且 `smol-toml` 随依赖装入
 4. `toml.ts` 与测试
 5. `discover.ts` 与测试
 6. `roster.ts` 与测试
