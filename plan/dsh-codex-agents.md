@@ -1,20 +1,19 @@
 # dsh-codex-agents 执行计划
 
-- 版本：v5
+- 版本：v6
 - 日期：2026-10-25
 - 状态：待审核
-- 上一版：v4（提交 `1b89210`），验收决定人确认两项决定：验收环境改用独立 DSH_HOME 的 web 自制配置档；子 agent 应具备再委派能力
+- 上一版：v5（提交 `a36086a`），审核意见：`schemastery` 应放 `dependencies`
 - 目标 DSH 版本：`@deepseek-ai/dsh-desktop-runtime` `0.2.1-rc.3`
 
-## v5 修改摘要
+## v6 修改摘要
 
-| 项 | v4 | v5 |
+| 项 | v5 | v6 |
 |---|---|---|
-| 子 agent 工具集 | `BASE_PLUGINS` 刻意不含委派工具，子 agent 无法再委派 | 纳入插件自己的 `spawn_agent`，靠宿主 `maxDepth` 挡住无限套娃 |
-| 验收环境 | 装进 `desktop` 配置档并经界面安装 | 独立 DSH_HOME 加 web 自制配置档，`dsh plugin add` 安装 |
-| 验收步骤 11 | 要求连续委派两层，因没有委派工具走不通 | 改为在子 agent 内再调 `spawn_agent`，验证 `maxDepth` 生效 |
+| `schemastery` 依赖层级 | 放在 `devDependencies`，靠宿主间接提供 | 移到 `dependencies`，由插件自己的依赖声明保证运行期可加载 |
+| 依赖分层理由 | 按「宿主包与非宿主包」划分 | 按「运行期是否 import」划分：运行期用到的库放 `dependencies`，共享服务放 `peerDependencies`，仅编译期用放 `devDependencies` |
 
-v4 的构建配置、三层依赖声明、编译产物对齐，v3 的四处修订（`maxDepth` 传递、`inject` 声明、包入口与构建先后、目标运行版本），v2 的五处修订（角色合并、路径编号、同编号重注册、按需扫描、`smol-toml` 依赖）全部保留，见下文各节。
+v5 的两处修订（子 agent 可再委派、独立 `DSH_HOME` 验收环境），v4 的构建配置与三层依赖声明，v3 的四处修订（`maxDepth` 传递、`inject` 声明、包入口与构建先后、目标运行版本），v2 的五处修订（角色合并、路径编号、同编号重注册、按需扫描、`smol-toml` 依赖）全部保留，见下文各节。
 
 ## 目标
 
@@ -64,7 +63,8 @@ npm 上另三个候选 `dsh-spawn-agent`、`dsh-codex-subagents`、`dsh-codex-ag
 | `defineTool` 来自 `@deepseek-ai/dsh-tools` | `dsh-tool-subagent` 的 import |
 | 宿主包在 npm 上可安装，版本与内置运行时一致 | `npm view @deepseek-ai/dsh-tools versions` 末项为 `0.2.1-rc.3`；`@deepseek-ai/cordis@4.0.5`、`@deepseek-ai/schemastery@3.18.5`、`@deepseek-ai/dsh-agent-preset-registry@0.2.1-rc.3` 均存在 |
 | 宿主包之间用 peer 声明，不各自复制实例 | 已安装插件 `dsh-workspace-mcp`、`dsh-opencode-go` 的 `peerDependencies` 写 `@deepseek-ai/cordis` 与 `@deepseek-ai/dsh-*`，只在 `devDependencies` 里锁具体版本 |
-| `dsh-tool-subagent` 自己把 `schemastery` 放在 `dependencies` | `npm view @deepseek-ai/dsh-tool-subagent@0.2.1-rc.3 dependencies`：`@deepseek-ai/schemastery ~3.18.5`、`zod 4.4.3` |
+| `dsh-tool-subagent` 把 `schemastery` 放在 `dependencies` | `npm view @deepseek-ai/dsh-tool-subagent@0.2.1-rc.3 dependencies`：`@deepseek-ai/schemastery ~3.18.5`、`zod 4.4.3` |
+| 已装插件对 `schemastery` 的层级取决于运行期是否引用 | `dsh-subagent-codex` 运行期引用，放 `dependencies`（`~3.18.5`）；`dsh-workspace-mcp` 的 `lib/index.js` 中 `schemastery` 出现 0 次，放 `devDependencies`（`^3.18.5`） |
 | DSH 内置 Node 24.21，无 `node:toml` | 实测 `import('node:toml')` 失败 |
 
 「注销后运行中子代理仍可用旧版」是本版编号策略成立的前提：同一编号注销再注册，新旧两个 generation 并存，正在跑的子代理挂在旧 generation 上，`users` 未归零前不会被销毁。
@@ -117,7 +117,10 @@ dsh-codex-agents/
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
   "files": ["lib/**/*.js", "lib/**/*.d.ts", "cordis.patch.yml",
             "locale/*.json", "icon.svg", "README.md", "LICENSE"],
-  "dependencies": { "smol-toml": "^1.9.1" },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "3.18.5",
+    "smol-toml": "^1.9.1"
+  },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.5 <5",
     "@deepseek-ai/dsh-tools": ">=0.2.1-rc.3 <0.3.0",
@@ -129,7 +132,6 @@ dsh-codex-agents/
     "@deepseek-ai/dsh-tools": "0.2.1-rc.3",
     "@deepseek-ai/dsh-subagent": "0.2.1-rc.3",
     "@deepseek-ai/dsh-agent-preset-registry": "0.2.1-rc.3",
-    "@deepseek-ai/schemastery": "3.18.5",
     "@types/node": "^22.20.0",
     "typescript": "^5.9.3"
   },
@@ -146,11 +148,13 @@ dsh-codex-agents/
 
 | 层 | 内容 | 理由 |
 |---|---|---|
-| `dependencies` | `smol-toml` | 插件自己的运行时依赖，随包装入 profile |
-| `peerDependencies` | `@deepseek-ai/cordis`、`dsh-tools`、`dsh-subagent`、`dsh-agent-preset-registry` | 这些服务与类型由宿主提供，插件必须复用宿主实例，不能自带副本 |
-| `devDependencies` | 上表四个宿主包的具体版本、`@deepseek-ai/schemastery`、`@types/node`、`typescript` | 只用于编译与类型检查；宿主包在此锁定到与目标运行时一致的版本，避免类型漂移 |
+| `dependencies` | `@deepseek-ai/schemastery`、`smol-toml` | 插件在运行期自己 import 的库：`schemastery` 用于构造并导出 `Config`，`smol-toml` 用于解析角色文件。二者不共享宿主服务实例，必须由插件自己的依赖声明保证可加载 |
+| `peerDependencies` | `@deepseek-ai/cordis`、`dsh-tools`、`dsh-subagent`、`dsh-agent-preset-registry` | 这些是宿主提供的服务与共享实例，插件必须复用宿主那一份，不能自带副本 |
+| `devDependencies` | 上表四个宿主包的具体版本、`@types/node`、`typescript` | 只用于编译与类型检查；宿主包在此锁定到与目标运行时一致的版本，避免类型漂移 |
 
-peer 的写法照抄工作区里已安装的第三方插件：`@deepseek-ai/cordis` 用 `>=4.0.5 <5` 的大版本区间，宿主包用 `>=0.2.1-rc.3 <0.3.0`。`dsh-tools` 必须在列，因为 `defineTool` 由它导出，`inject` 里的 `tools` 服务也由它提供。`schemastery` 由宿主随插件树加载，`dsh-tool-subagent` 自己就把它放在 `dependencies` 里（`~3.18.5`），所以插件这边只需 `devDependencies` 提供类型。
+peer 的写法照抄工作区里已安装的第三方插件：`@deepseek-ai/cordis` 用 `>=4.0.5 <5` 的大版本区间，宿主包用 `>=0.2.1-rc.3 <0.3.0`。`dsh-tools` 必须在 peer 列，因为 `defineTool` 由它导出，`inject` 里的 `tools` 服务也由它提供。
+
+`schemastery` 放 `dependencies` 而不是 `devDependencies`，判断依据是运行期是否 import 它。插件入口要 `export const Config = z.object({...})`，模块加载时就会求值，属于运行期依赖；若只放 dev，正式安装后靠宿主间接提供，插件自己的声明并不保证它存在。同一运行时里的 `dsh-tool-subagent` 与 `dsh-subagent-codex` 都把 `schemastery` 放在 `dependencies`（`~3.18.5`），而 `dsh-workspace-mcp` 放 `devDependencies` 是因为它的运行入口里完全没有引用（`grep -c schemastery lib/index.js` 为 0），只在构建期使用。本插件属于前一种。
 
 ### 编译配置 `tsconfig.json`
 
@@ -518,7 +522,7 @@ export function apply(ctx, config) {
 ## 验收步骤
 
 1. `npm install` 后跑 `npm run build` 与 `npm run typecheck` 均通过，`npm pack` 产物含 `lib/index.js`、`lib/index.d.ts`、`cordis.patch.yml`、locale 与图标
-2. 建独立 DSH_HOME 与 web 自制配置档（`dsh --profile <名> --from-default-profile web`），用 `dsh plugin --profile <名> add <安装包>` 装入，确认 `smol-toml` 随依赖装入，插件处于已激活而非报错状态
+2. 建独立 DSH_HOME 与 web 自制配置档（`dsh --profile <名> --from-default-profile web`），用 `dsh plugin --profile <名> add <安装包>` 装入，确认 `smol-toml` 与 `@deepseek-ai/schemastery` 两个运行期依赖随包装入，插件处于已激活而非报错状态
 3. 重启该配置档
 4. 在项目里放 `.codex/agents/` 测试 toml，同时在 `~/.codex/agents/` 放一个全局角色
 5. 新开会话，让模型调用 `spawn_agent(task_name: "t1", agent_type: "<项目角色名>", message: "...")`
