@@ -1,21 +1,21 @@
 # dsh-codex-agents 执行计划
 
-- 版本：v3
+- 版本：v4
 - 日期：2026-10-25
 - 状态：待审核
-- 上一版：v2（提交 `aae7b9f`），审核结论 `NEEDS_MODIFICATION`
+- 上一版：v3（提交 `c2244f6`），审核意见：构建配置与依赖声明不完整
 - 目标 DSH 版本：`@deepseek-ai/dsh-desktop-runtime` `0.2.1-rc.3`
 
-## v3 修改摘要
+## v4 修改摘要
 
-| 项 | v2 | v3 |
+| 项 | v3 | v4 |
 |---|---|---|
-| 委派深度 | 请求里不传 `maxDepth` | 派发前取宿主限制，按原生工具方式放进请求 |
-| 服务依赖 | 未声明 | 入口声明 `tools`、`subagents`、`agentPresets` 三项必需服务 |
-| 可安装包 | 未写入口、打包文件与构建先后 | 明确 `exports`、`main`、`files`、构建产物，安装验证排到入口生成之后 |
-| 事实依据 | 只引本地 `lib/index.js` | 补记目标 DSH 版本，逐条对应到该版本 |
+| 编译配置文件名 | 结构写 `tsconfig.json`，`build` 脚本用 `tsconfig.build.json` | 统一为单个 `tsconfig.json`，`build` 与 `typecheck` 都指向它 |
+| 依赖声明 | 只声明 `smol-toml` | 补齐 `dependencies`、`peerDependencies`、`devDependencies` 三层，含 TypeScript 与宿主开发依赖 |
+| 编译产物 | 只说产出 `lib/` | 明确 `lib/index.js` 与 `lib/index.d.ts` 两个文件，`main`、`types`、`exports` 三者对齐 |
+| 编译选项 | 未写 | 给出完整 `tsconfig.json`，说明 `rootDir`、`outDir`、`declaration`、`NodeNext` 的作用 |
 
-v2 的五处修订（角色合并、路径编号、同编号重注册、按需扫描、`smol-toml` 依赖）全部保留，见下文各节。
+v2 的五处修订（角色合并、路径编号、同编号重注册、按需扫描、`smol-toml` 依赖）与 v3 的四处修订（`maxDepth` 传递、`inject` 声明、包入口与构建先后、目标运行版本）全部保留，见下文各节。
 
 ## 目标
 
@@ -63,6 +63,9 @@ npm 上另三个候选 `dsh-spawn-agent`、`dsh-codex-subagents`、`dsh-codex-ag
 | 服务未就绪时插件不应直接取用 | `cordis-plugin-development/references/practices.md`：把服务放进 `inject` 或 `ctx.inject([...], ...)`，否则在不含该服务的配置里会抛错 |
 | `request.prompt` 是 `ContentBlock[]` 而非字符串 | `dsh-tool-subagent` 构造 request 的代码 |
 | `defineTool` 来自 `@deepseek-ai/dsh-tools` | `dsh-tool-subagent` 的 import |
+| 宿主包在 npm 上可安装，版本与内置运行时一致 | `npm view @deepseek-ai/dsh-tools versions` 末项为 `0.2.1-rc.3`；`@deepseek-ai/cordis@4.0.5`、`@deepseek-ai/schemastery@3.18.5`、`@deepseek-ai/dsh-agent-preset-registry@0.2.1-rc.3` 均存在 |
+| 宿主包之间用 peer 声明，不各自复制实例 | 已安装插件 `dsh-workspace-mcp`、`dsh-opencode-go` 的 `peerDependencies` 写 `@deepseek-ai/cordis` 与 `@deepseek-ai/dsh-*`，只在 `devDependencies` 里锁具体版本 |
+| `dsh-tool-subagent` 自己把 `schemastery` 放在 `dependencies` | `npm view @deepseek-ai/dsh-tool-subagent@0.2.1-rc.3 dependencies`：`@deepseek-ai/schemastery ~3.18.5`、`zod 4.4.3` |
 | DSH 内置 Node 24.21，无 `node:toml` | 实测 `import('node:toml')` 失败 |
 
 「注销后运行中子代理仍可用旧版」是本版编号策略成立的前提：同一编号注销再注册，新旧两个 generation 并存，正在跑的子代理挂在旧 generation 上，`users` 未归零前不会被销毁。
@@ -73,7 +76,7 @@ npm 上另三个候选 `dsh-spawn-agent`、`dsh-codex-subagents`、`dsh-codex-ag
 dsh-codex-agents/
 ├── package.json          name=dsh-codex-agents, type=module, exports, files, dsh.bundle.patch
 ├── cordis.patch.yml      insert 一行，id=dsh-codex-agents
-├── tsconfig.json
+├── tsconfig.json         唯一的编译配置，构建与类型检查共用
 ├── locale/
 │   ├── en.json           meta.title / meta.description
 │   └── zh.json
@@ -88,15 +91,16 @@ dsh-codex-agents/
 │   ├── tool.ts           spawn_agent 工具定义与派发
 │   └── base-plugins.ts   基础工具清单
 ├── lib/                  构建产物，随包发布
-│   └── index.js
-└── test/*.test.mjs       node:test 单元测试，跑在 src 的构建产物上
+│   ├── index.js          ESM 入口
+│   └── index.d.ts        入口类型声明
+└── test/*.test.mjs       node:test 单元测试，跑在 lib 的构建产物上
 ```
 
-`roster.ts` 专门负责合并与优先级，避免 `discover.ts` 同时承担查找和决策两件事。
+`roster.ts` 专门负责合并与优先级，避免 `discover.ts` 同时承担查找和决策两件事。编译配置只有一个 `tsconfig.json`，`build`、`typecheck` 两个脚本都指向它，不再出现第二份配置文件名。
 
 ### 可安装包格式
 
-`package.json` 必须让 DSH 的加载器找得到运行入口：
+`package.json` 必须让 DSH 的加载器找得到运行入口，并声明编译所需的工具与宿主依赖：
 
 ```json
 {
@@ -104,6 +108,7 @@ dsh-codex-agents/
   "version": "0.1.0",
   "type": "module",
   "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
   "exports": {
     ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" },
     "./package.json": "./package.json",
@@ -114,23 +119,82 @@ dsh-codex-agents/
   "files": ["lib/**/*.js", "lib/**/*.d.ts", "cordis.patch.yml",
             "locale/*.json", "icon.svg", "README.md", "LICENSE"],
   "dependencies": { "smol-toml": "^1.9.1" },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.5 <5",
+    "@deepseek-ai/dsh-tools": ">=0.2.1-rc.3 <0.3.0",
+    "@deepseek-ai/dsh-subagent": ">=0.2.1-rc.3 <0.3.0",
+    "@deepseek-ai/dsh-agent-preset-registry": ">=0.2.1-rc.3 <0.3.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-subagent": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-agent-preset-registry": "0.2.1-rc.3",
+    "@deepseek-ai/schemastery": "3.18.5",
+    "@types/node": "^22.20.0",
+    "typescript": "^5.9.3"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "test": "node --test test/*.test.mjs",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs",
     "prepack": "npm run build"
   }
 }
 ```
 
+依赖分三层，各管一件事：
+
+| 层 | 内容 | 理由 |
+|---|---|---|
+| `dependencies` | `smol-toml` | 插件自己的运行时依赖，随包装入 profile |
+| `peerDependencies` | `@deepseek-ai/cordis`、`dsh-tools`、`dsh-subagent`、`dsh-agent-preset-registry` | 这些服务与类型由宿主提供，插件必须复用宿主实例，不能自带副本 |
+| `devDependencies` | 上表四个宿主包的具体版本、`@deepseek-ai/schemastery`、`@types/node`、`typescript` | 只用于编译与类型检查；宿主包在此锁定到与目标运行时一致的版本，避免类型漂移 |
+
+peer 的写法照抄工作区里已安装的第三方插件：`@deepseek-ai/cordis` 用 `>=4.0.5 <5` 的大版本区间，宿主包用 `>=0.2.1-rc.3 <0.3.0`。`dsh-tools` 必须在列，因为 `defineTool` 由它导出，`inject` 里的 `tools` 服务也由它提供。`schemastery` 由宿主随插件树加载，`dsh-tool-subagent` 自己就把它放在 `dependencies` 里（`~3.18.5`），所以插件这边只需 `devDependencies` 提供类型。
+
+### 编译配置 `tsconfig.json`
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": "src",
+    "outDir": "lib",
+    "declaration": true,
+    "declarationMap": false,
+    "sourceMap": false,
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "verbatimModuleSyntax": true,
+    "noEmitOnError": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["lib", "test", "node_modules"]
+}
+```
+
+要点：
+
+- `rootDir: src`、`outDir: lib` 保证产出的相对路径就是 `lib/index.js` 与 `lib/index.d.ts`，与 `main`、`types`、`exports` 完全对齐
+- `declaration: true` 才会生成 `lib/index.d.ts`；`exports["."].types` 指向它，缺这个文件类型解析会失败
+- `module`／`moduleResolution` 用 `NodeNext`，与 `"type": "module"` 的 ESM 输出一致，避免生成 CommonJS 后加载器按 ESM 读取失败
+- `types: ["node"]` 只需 Node 类型；不引入 DOM，防止误用浏览器 API
+- `noEmitOnError: true` 保证类型错误时不产出半成品入口
+
 约定：
 
-- `exports["."]` 指向构建产物 `lib/index.js`，`main` 与之相同，二者不可指向 `src/`
+- `exports["."]` 指向 `lib/index.js`，`main`、`types` 与之对应，三者都不可指向 `src/`
 - `dsh.bundle.patch` 指向根目录的 `cordis.patch.yml`
 - `files` 覆盖运行所需全部文件：构建产物、补丁、locale、图标；`prepack` 保证打包前一定有产物
 - `locale/en.json` 与 `locale/zh.json` 提供 `meta.title`、`meta.description`，`icon.svg` 为包内相对路径
-- 构建器不指定，`tsc` 只是其中一种；本计划按 `tsc` 写脚本，实现时可替换
+- 构建器不指定，`tsc` 只是其中一种；若换构建器，须继续保证 `lib/index.js` 与 `lib/index.d.ts` 两个产物存在，并保留 `typescript` 之外的依赖声明不变
 
-构建产物与安装验证的先后：先有 `lib/index.js`，再谈正式安装。`npm pack` 出的包必须包含 `lib/index.js`，否则安装后加载器没有可执行入口。
+构建产物与安装验证的先后：先有 `lib/index.js`，再谈正式安装。`npm pack` 出的包必须包含 `lib/index.js` 与 `lib/index.d.ts`，否则安装后加载器没有可执行入口，或类型解析失败。
 
 ## 数据流
 
@@ -439,7 +503,7 @@ export function apply(ctx, config) {
 
 ## 验收步骤
 
-1. 构建并 `npm pack`，确认产物含 `lib/index.js`、`cordis.patch.yml`、locale 与图标
+1. `npm install` 后跑 `npm run build` 与 `npm run typecheck` 均通过，`npm pack` 产物含 `lib/index.js`、`lib/index.d.ts`、`cordis.patch.yml`、locale 与图标
 2. 插件装进 `desktop` profile（GUI 安装，CLI 被锁），确认 `smol-toml` 随依赖装入，插件处于已激活而非报错状态
 3. 重启 DSH
 4. 在项目里放 `.codex/agents/` 测试 toml，同时在 `~/.codex/agents/` 放一个全局角色
@@ -472,9 +536,9 @@ v1 的第 2 条假设（`ctx.workspaceRegistry` 可见性）随启动扫描一�
 
 ## 实施顺序
 
-1. 项目骨架：`package.json`（`main`／`exports`／`files`）、`cordis.patch.yml`、`tsconfig.json`、locale、图标
-2. 最小可加载入口：`src/index.ts` 先只做 `inject` 声明与空 `apply`，跑通 `tsc` 得到 `lib/index.js`
-3. 打包与正式安装验证：`npm pack` 确认产物含 `lib/index.js`，按 GUI 安装进 `desktop` profile，确认插件能激活且 `smol-toml` 随依赖装入
+1. 项目骨架：`package.json`（`main`／`types`／`exports`／`files`／三层依赖）、`cordis.patch.yml`、`tsconfig.json`、locale、图标，然后 `npm install` 装齐编译依赖
+2. 最小可加载入口：`src/index.ts` 先只做 `inject` 声明与空 `apply`，跑通 `npm run build` 得到 `lib/index.js` 与 `lib/index.d.ts`，再跑 `npm run typecheck` 确认无类型错误
+3. 打包与正式安装验证：`npm pack` 确认产物含 `lib/index.js` 与 `lib/index.d.ts`，按 GUI 安装进 `desktop` profile，确认插件能激活且 `smol-toml` 随依赖装入
 4. `toml.ts` 与测试
 5. `discover.ts` 与测试
 6. `roster.ts` 与测试
@@ -484,4 +548,4 @@ v1 的第 2 条假设（`ctx.workspaceRegistry` 可见性）随启动扫描一�
 10. `index.ts` 补全：配置 schema、工具注册、服务声明定型
 11. 重新构建、重新打包、重新安装，按验收步骤手动验证
 
-第 2、3 步提前，是因为「能不能装、装完能不能加载」属于包格式问题，晚发现会让后面所有验证都失去载体。`smol-toml` 依赖验证也放在第 3 步，此时 `package.json` 的 `dependencies` 已定稿。
+第 2、3 步提前，是因为「能不能装、装完能不能加载」属于包格式问题，晚发现会让后面所有验证都失去载体。第 1 步必须先完成 `npm install`，否则第 2 步连 `tsc` 都跑不起来；这也是审核指出的「无法保证编译成功」的直接原因。`smol-toml` 依赖验证放在第 3 步，此时 `package.json` 的 `dependencies` 已定稿。
