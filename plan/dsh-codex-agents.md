@@ -1,19 +1,21 @@
 # dsh-codex-agents 执行计划
 
-- 版本：v2
+- 版本：v3
 - 日期：2026-10-25
 - 状态：待审核
-- 上一版：v1（提交 `fe1adf2`），审核结论 `NEEDS_MODIFICATION`
+- 上一版：v2（提交 `aae7b9f`），审核结论 `NEEDS_MODIFICATION`
+- 目标 DSH 版本：`@deepseek-ai/dsh-desktop-runtime` `0.2.1-rc.3`
 
-## v2 修改摘要
+## v3 修改摘要
 
-| 项 | v1 | v2 |
+| 项 | v2 | v3 |
 |---|---|---|
-| 角色查找 | 找到项目目录就只用项目目录 | 项目与全局按名称合并，同名项目优先；仍能调用全局独有角色 |
-| preset 编号 | `agent.name`，冲突时用文件内容哈希 | `dshca_<agentName>_<pathHash5>`，哈希来自目录路径，与文件内容无关 |
-| 文件更新 | 不注销，另注册新 id | 注销旧注册，用同一编号注册新版；运行中子代理继续用旧版 |
-| 启动扫描 | `warmUp` 遍历全部工作区并预扫描 | 取消启动扫描，首次调用时按需扫描 |
-| TOML 依赖 | 装不上就自写简化解析器 | `smol-toml` 作为普通运行时依赖，按正式安装方式验证 |
+| 委派深度 | 请求里不传 `maxDepth` | 派发前取宿主限制，按原生工具方式放进请求 |
+| 服务依赖 | 未声明 | 入口声明 `tools`、`subagents`、`agentPresets` 三项必需服务 |
+| 可安装包 | 未写入口、打包文件与构建先后 | 明确 `exports`、`main`、`files`、构建产物，安装验证排到入口生成之后 |
+| 事实依据 | 只引本地 `lib/index.js` | 补记目标 DSH 版本，逐条对应到该版本 |
+
+v2 的五处修订（角色合并、路径编号、同编号重注册、按需扫描、`smol-toml` 依赖）全部保留，见下文各节。
 
 ## 目标
 
@@ -41,16 +43,24 @@ npm 上另三个候选 `dsh-spawn-agent`、`dsh-codex-subagents`、`dsh-codex-ag
 
 ## 已核实的技术前提
 
+目标运行版本：`@deepseek-ai/dsh-desktop-runtime` `0.2.1-rc.3`（本机 `/Applications/DeepSeek Harness.app` 内置）。下表所列包均在该运行时内核实，版本同为 `0.2.1-rc.3`：`@deepseek-ai/dsh-agent-preset-registry`、`@deepseek-ai/dsh-subagent`、`@deepseek-ai/dsh-tool-subagent`、`@deepseek-ai/dsh-subagent-spawn-in-process`。依据一栏写的是这些包内的 `lib/index.js`；升级 DSH 后需按新版本复核标注「关键」的条目。
+
 | 事实 | 依据 |
 |---|---|
-| `SubagentStartRequest` 有 `agentPreset` 字段 | `dsh-subagent/lib/index.js`：`composition: { agentPreset: request.agentPreset }` |
+| **关键** `SubagentStartRequest` 有 `agentPreset` 字段 | `dsh-subagent/lib/index.js`：`composition: { agentPreset: request.agentPreset }` |
 | `request.persona` 已从请求移除 | `applyChildOverrides` 读 `composition.persona`，但 `startActivation` 只填 `agentPreset` |
 | preset 是设置子 agent 人格与工具集的唯一公开路径 | 同上；非公开路径为 `reserveChildComposition`，`dsh-subagent-registry` 在用 |
-| `ctx.agentPresets.register(definition)` 是公开 API，返回 disposer | `dsh-agent-preset-registry/lib/index.js`：`return unregister` |
+| **关键** `ctx.agentPresets.register(definition)` 是公开 API，返回 disposer | `dsh-agent-preset-registry/lib/index.js`：`return unregister` |
 | `register()` 立即 `activate()` 并建完整插件树 | 同上：`record.ready = this.activate(record)` |
 | id 已存在时 `register()` 抛错，不会覆盖 | 同上：`if (this.definitions.has(definition.id)) throw new Error("Duplicate agent preset: ...")` |
-| 注销后运行中的子代理仍可用旧版 | 同上：disposer 标记 `retired` 后调 `collect()`，而 `collect()` 在 `generation.users !== 0` 时直接返回 |
-| `spawn` provider 支持独立预设 | `dsh-subagent-spawn-in-process/lib/index.js`：`capabilities.agentPreset: true`、`inheritsParentContext: false` |
+| **关键** 注销后运行中的子代理仍可用旧版 | 同上：disposer 标记 `retired` 后调 `collect()`，而 `collect()` 在 `generation.users !== 0` 时直接返回 |
+| **关键** `spawn` provider 支持独立预设与深度限制 | `dsh-subagent-spawn-in-process/lib/index.js`：`capabilities` 中 `agentOptions`、`agentPreset`、`outputSchema`、`depthLimit` 全为 `true`；`inheritsParentContext: false` |
+| **关键** 深度限制需由调用方放进请求 | `dsh-tool-subagent/lib/index.js`：`const maxDepth = runtimeCtx.subagents.resolveMaxDepth(config.maxDepth)`，随后 `...maxDepth !== void 0 ? { maxDepth } : {}` 拼进 `request` |
+| `resolveMaxDepth(configured)` 的取值规则 | `dsh-subagent/lib/index.js`：传 `"provider-managed"` 返回 `undefined`，传数字返回该数字，未传则读宿主配置 `maxDepth`（默认 `1`） |
+| 请求带 `maxDepth` 要求 provider 有 `depthLimit` | `dsh-subagent/lib/index.js`：`when: request.maxDepth !== void 0, cap: "depthLimit"`，缺失时抛 `UNSUPPORTED_CAPABILITY` |
+| 子代理深度按父深度加一计算并校验上限 | 同上：`resolveChildDepth` 里 `childDepth = delegationDepthOf(parent) + 1`，超过 `maxDepth` 抛 `SubagentDepthError` |
+| **关键** 插件用 `inject` 声明必需服务 | `dsh-tool-todo/lib/index.js`：`const inject = ["tools", "sessionProjections"]`，与 `name`、`apply` 一起具名导出 |
+| 服务未就绪时插件不应直接取用 | `cordis-plugin-development/references/practices.md`：把服务放进 `inject` 或 `ctx.inject([...], ...)`，否则在不含该服务的配置里会抛错 |
 | `request.prompt` 是 `ContentBlock[]` 而非字符串 | `dsh-tool-subagent` 构造 request 的代码 |
 | `defineTool` 来自 `@deepseek-ai/dsh-tools` | `dsh-tool-subagent` 的 import |
 | DSH 内置 Node 24.21，无 `node:toml` | 实测 `import('node:toml')` 失败 |
@@ -61,11 +71,15 @@ npm 上另三个候选 `dsh-spawn-agent`、`dsh-codex-subagents`、`dsh-codex-ag
 
 ```
 dsh-codex-agents/
-├── package.json          name=dsh-codex-agents, type=module, dsh.bundle.patch
+├── package.json          name=dsh-codex-agents, type=module, exports, files, dsh.bundle.patch
 ├── cordis.patch.yml      insert 一行，id=dsh-codex-agents
 ├── tsconfig.json
-├── src/
-│   ├── index.ts          插件入口、配置 schema、只注册工具
+├── locale/
+│   ├── en.json           meta.title / meta.description
+│   └── zh.json
+├── icon.svg
+├── src/                  TypeScript 源码
+│   ├── index.ts          插件入口、配置 schema、服务声明、只注册工具
 │   ├── toml.ts           TOML 解析 + 字段校验
 │   ├── discover.ts       目录发现：项目向上查找 + 全局目录定位
 │   ├── roster.ts         项目与全局角色合并、同名优先级
@@ -73,16 +87,56 @@ dsh-codex-agents/
 │   ├── preset.ts         toml 转 preset definition、按需注册与替换
 │   ├── tool.ts           spawn_agent 工具定义与派发
 │   └── base-plugins.ts   基础工具清单
-└── test/*.test.mjs       node:test 单元测试
+├── lib/                  构建产物，随包发布
+│   └── index.js
+└── test/*.test.mjs       node:test 单元测试，跑在 src 的构建产物上
 ```
 
-`roster.ts` 是 v2 新增模块，专门负责合并与优先级，避免 `discover.ts` 同时承担查找和决策两件事。
+`roster.ts` 专门负责合并与优先级，避免 `discover.ts` 同时承担查找和决策两件事。
+
+### 可安装包格式
+
+`package.json` 必须让 DSH 的加载器找得到运行入口：
+
+```json
+{
+  "name": "dsh-codex-agents",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" },
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "files": ["lib/**/*.js", "lib/**/*.d.ts", "cordis.patch.yml",
+            "locale/*.json", "icon.svg", "README.md", "LICENSE"],
+  "dependencies": { "smol-toml": "^1.9.1" },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "node --test test/*.test.mjs",
+    "prepack": "npm run build"
+  }
+}
+```
+
+约定：
+
+- `exports["."]` 指向构建产物 `lib/index.js`，`main` 与之相同，二者不可指向 `src/`
+- `dsh.bundle.patch` 指向根目录的 `cordis.patch.yml`
+- `files` 覆盖运行所需全部文件：构建产物、补丁、locale、图标；`prepack` 保证打包前一定有产物
+- `locale/en.json` 与 `locale/zh.json` 提供 `meta.title`、`meta.description`，`icon.svg` 为包内相对路径
+- 构建器不指定，`tsc` 只是其中一种；本计划按 `tsc` 写脚本，实现时可替换
+
+构建产物与安装验证的先后：先有 `lib/index.js`，再谈正式安装。`npm pack` 出的包必须包含 `lib/index.js`，否则安装后加载器没有可执行入口。
 
 ## 数据流
 
 ```mermaid
 flowchart TD
-    A[插件 apply] --> B[同步注册 spawn_agent 工具]
+    A[inject 就绪 tools subagents agentPresets] --> B[apply 同步注册 spawn_agent 工具]
     B --> C[启动结束 不做任何扫描]
 
     D[spawn_agent 调用] --> E[取 exec.agent.session.header.cwd]
@@ -101,7 +155,8 @@ flowchart TD
     O -->|是| Q[直接派发]
     O -->|否| P[注销旧注册 用同一编号注册新版]
     P --> Q
-    Q --> R[startActivation 带 agentPreset]
+    Q --> S[resolveMaxDepth 取宿主限制]
+    S --> R[startActivation 带 agentPreset 与 maxDepth]
 ```
 
 启动路径只有一步：注册工具。扫描、解析、注册全部推迟到第一次调用。
@@ -139,7 +194,7 @@ mergeRoster(project: RoleSource[], global: RoleSource[]): RoleSource[]
 - 项目与全局都不存在时返回空数组，由调用方报错
 - 合并结果按 `name` 排序，保证报错信息里的角色列表稳定
 
-这是 v1 的行为变化点：v1 找到项目目录就丢弃全局目录，v2 始终两处都看。
+这是相对 v1 的行为变化：v1 找到项目目录就丢弃全局目录，现在始终两处都看。
 
 ### 3. TOML 解析 `toml.ts`
 
@@ -290,7 +345,8 @@ spawn_agent(
 5. 名单中找 `name === agent_type`
    - 找不到则抛错：`Unknown agent_type "xxx". Available: a, b, c. (scanned <项目目录>, <全局目录>)`
 6. `ensurePresetRegistered` 得到 `presetId`，必要时完成注销与重注册
-7. 派发：
+7. 取深度限制：`const maxDepth = ctx.subagents.resolveMaxDepth(config.maxDepth)`
+8. 派发：
 
 ```js
 await ctx.subagents.startActivation({
@@ -300,23 +356,32 @@ await ctx.subagents.startActivation({
     prompt: [{ type: 'text', text: message }],
     parent: exec.agent,
     agentPreset: presetId,
+    ...maxDepth !== void 0 ? { maxDepth } : {},
   },
   signal: exec.signal,
   delivery: 'parent',
 })
 ```
 
-8. 返回 `started subagent <childId>`，与官方 `subagent` 工具输出格式一致
+9. 返回 `started subagent <childId>`，与官方 `subagent` 工具输出格式一致
+
+第 7 步与原生 `subagent` 工具写法一致：由 `resolveMaxDepth` 决定取哪个上限，值不为 `undefined` 才放进请求。这样省略配置时子代理仍受宿主 `maxDepth` 约束，不会绕过宿主委派深度上限；配置成 `'provider-managed'` 时才由 provider 自行处理，但 `spawn` provider 有 `depthLimit` 能力，第一版不支持该取值，配置校验里直接拒绝。
 
 首次调用要读 TOML、建插件树，因此比后续调用慢；这是按需扫描的直接代价，接受。
 
 ### 7. 插件入口 `index.ts`
 
 ```ts
+export const name = 'dsh-codex-agents'
+export const inject = ['tools', 'subagents', 'agentPresets']
+export const Config = /* schemastery schema */
+
 export function apply(ctx, config) {
   ctx.tools.register(spawnAgentTool(ctx, config))
 }
 ```
+
+`inject` 声明三项必需服务：`tools` 用于注册工具，`subagents` 用于取深度限制与派发，`agentPresets` 用于按需注册预设。这三项在 `apply` 之前就绪，不能靠加载顺序碰运气；声明之后插件在不含它们的配置里会保持未激活，而不是在 `apply` 里抛 `undefined`。
 
 启动阶段只做一件事：注册工具。没有 `warmUp`，不调 `ctx.workspaceRegistry.list()`，不遍历工作区，不预先解析任何 toml。启动耗时不随角色文件数量增长。
 
@@ -329,7 +394,7 @@ export function apply(ctx, config) {
 | `agentsDirName` | `.codex/agents` | 相对项目根 |
 | `searchParents` | `true` | 是否向上查找 |
 | `maxParentDepth` | `8` | 向上层数上限 |
-| `maxDepth` | 继承 Host | 委派深度 |
+| `maxDepth` | 不传，走宿主值 | 传给 `resolveMaxDepth`；只接受非负安全整数，拒绝 `'provider-managed'` |
 | `indexFileName` | `.dsh/agents-index.json` | 相对项目根 |
 
 `workspaceRegistry` 相关配置项全部移除，因为不再需要枚举工作区。
@@ -352,6 +417,8 @@ export function apply(ctx, config) {
 | `.dsh` 目录不可写 | 索引降级为进程内 Map，记 warn |
 | 项目根找不到 | 索引写到 `~/.dsh/agents-index.json` |
 | 会话缺少 `cwd` | 调用报错，提示无法定位项目目录 |
+| 请求的 `maxDepth` 被 provider 拒绝 | 派发前不校验能力，交给 `startActivation` 抛 `UNSUPPORTED_CAPABILITY`；错误原样透出 |
+| 深度超过上限 | `startActivation` 抛 `SubagentDepthError`，错误原样透出，不吞掉 |
 
 ## 测试
 
@@ -364,22 +431,25 @@ export function apply(ctx, config) {
 | `roster.test.mjs` | 项目覆盖全局、全局独有保留、两边都空、排序稳定 |
 | `index-cache.test.mjs` | 写入读取、mtime 与 size 失效、损坏丢弃、文件消失、编号持久化 |
 | `preset.test.mjs` | 编号格式、`pathHash5` 位数与稳定性、内容变化编号不变、冲突后缀递增、替换时先注销 |
+| `tool.test.mjs` | `maxDepth` 放进请求、`'provider-managed'` 被配置校验拒绝、未知 `agent_type` 报错含合并名单 |
 
 `preset.test.mjs` 的注册相关断言用假 registry 注入，不启动真实 DSH。
 
-不写集成测试（需真实 DSH 运行时，代价高）。集成验证靠手动。
+不写集成测试（需真实 DSH 运行时，代价高）。集成验证靠手动。`maxDepth` 传递不单独做单元测试，它由假 `subagents` 的调用参数体现，在 `tool.test.mjs` 里断言请求含 `maxDepth` 且配置为 `'provider-managed'` 时被拒绝。
 
 ## 验收步骤
 
-1. 插件装进 `desktop` profile（GUI 安装，CLI 被锁），确认 `smol-toml` 随依赖装入
-2. 重启 DSH
-3. 在项目里放 `.codex/agents/` 测试 toml，同时在 `~/.codex/agents/` 放一个全局角色
-4. 新开会话，让模型调用 `spawn_agent(task_name: "t1", agent_type: "<项目角色名>", message: "...")`
-5. 问子 agent「你的职责是什么」，确认应答出 toml 里的内容
-6. 同一会话调用全局独有角色，确认也能起子 agent
-7. 确认 `.dsh/agents-index.json` 已生成，且含项目与全局两条
-8. 改 toml 后再次调用，确认新内容生效，且预设下拉框没有多出条目
-9. 另开一个项目放同名角色，确认两个项目各自生效、编号不同
+1. 构建并 `npm pack`，确认产物含 `lib/index.js`、`cordis.patch.yml`、locale 与图标
+2. 插件装进 `desktop` profile（GUI 安装，CLI 被锁），确认 `smol-toml` 随依赖装入，插件处于已激活而非报错状态
+3. 重启 DSH
+4. 在项目里放 `.codex/agents/` 测试 toml，同时在 `~/.codex/agents/` 放一个全局角色
+5. 新开会话，让模型调用 `spawn_agent(task_name: "t1", agent_type: "<项目角色名>", message: "...")`
+6. 问子 agent「你的职责是什么」，确认应答出 toml 里的内容
+7. 同一会话调用全局独有角色，确认也能起子 agent
+8. 确认 `.dsh/agents-index.json` 已生成，且含项目与全局两条
+9. 改 toml 后再次调用，确认新内容生效，且预设下拉框没有多出条目
+10. 另开一个项目放同名角色，确认两个项目各自生效、编号不同
+11. 会话里连续委派两层，确认超过宿主 `maxDepth` 时被 `SubagentDepthError` 挡住，而不是无限套娃正常放行
 
 ## 已知限制（第一版接受）
 
@@ -395,19 +465,23 @@ export function apply(ctx, config) {
 
 ## 待确认的假设
 
-1. `smol-toml` 作为普通运行时依赖能被插件正式安装流程装入 profile：步骤 1 验证。失败时记录实际错误后修订方案，不自写解析器。
+1. `smol-toml` 作为普通运行时依赖能被插件正式安装流程装入 profile：实施顺序第 3 步验证。失败时记录实际错误后修订方案，不自写解析器。
 2. 开发目录位置：当前会话工作区之外写文件需要授权。建议先在 `default-workspace/dsh-codex-agents/` 开发。
 
 v1 的第 2 条假设（`ctx.workspaceRegistry` 可见性）随启动扫描一起取消，不再需要。
 
 ## 实施顺序
 
-1. 项目骨架与 `smol-toml` 依赖验证
-2. `toml.ts` 与测试
-3. `discover.ts` 与测试
-4. `roster.ts` 与测试
-5. `index-cache.ts` 与测试
-6. `preset.ts` 与 `base-plugins.ts` 与测试
-7. `tool.ts`
-8. `index.ts`（只注册工具）
-9. 构建与手动集成验证
+1. 项目骨架：`package.json`（`main`／`exports`／`files`）、`cordis.patch.yml`、`tsconfig.json`、locale、图标
+2. 最小可加载入口：`src/index.ts` 先只做 `inject` 声明与空 `apply`，跑通 `tsc` 得到 `lib/index.js`
+3. 打包与正式安装验证：`npm pack` 确认产物含 `lib/index.js`，按 GUI 安装进 `desktop` profile，确认插件能激活且 `smol-toml` 随依赖装入
+4. `toml.ts` 与测试
+5. `discover.ts` 与测试
+6. `roster.ts` 与测试
+7. `index-cache.ts` 与测试
+8. `preset.ts` 与 `base-plugins.ts` 与测试
+9. `tool.ts`（含 `maxDepth` 传递）
+10. `index.ts` 补全：配置 schema、工具注册、服务声明定型
+11. 重新构建、重新打包、重新安装，按验收步骤手动验证
+
+第 2、3 步提前，是因为「能不能装、装完能不能加载」属于包格式问题，晚发现会让后面所有验证都失去载体。`smol-toml` 依赖验证也放在第 3 步，此时 `package.json` 的 `dependencies` 已定稿。
