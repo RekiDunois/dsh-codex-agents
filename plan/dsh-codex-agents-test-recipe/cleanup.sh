@@ -38,13 +38,8 @@ if [ -f "$BASE/logs/web.pid" ]; then
   fi
 fi
 
-# 计划第 4 节要求关闭本次临时浏览器窗口。测试资料目录固定在 BASE 之外，
-# 被占用时不影响删除 BASE，但窗口仍开着会让下一轮复用同一会话状态，
-# 因此仍提示关闭；不擅自结束用户的浏览器进程。
-if [ -n "${BROWSER_PROFILE:-}" ] && pgrep -f "user-data-dir=${BROWSER_PROFILE}" >/dev/null 2>&1; then
-  printf '提示：测试浏览器窗口仍开着（资料目录 %s）。\n' "$BROWSER_PROFILE" >&2
-  printf '请关闭它；本脚本不会替你结束浏览器进程。BASE 仍会被清理。\n' >&2
-fi
+# 浏览器由执行工程师的 MCP 管理，本脚本不检查也不结束浏览器进程。
+# 计划第 4 节"关闭本次临时浏览器窗口"由执行工程师通过 MCP 完成。
 
 # 只删本次新建的两份全局角色
 if [ -n "${GLOBAL_AGENTS:-}" ]; then

@@ -6,7 +6,8 @@
 
 正式验证使用 DSH 官方 `web` 配置档与浏览器界面，在当前 macOS 账户运行：
 
-- `HOME` 不变，只隔离本次 `DSH_HOME`、浏览器资料目录与测试工作区。
+- `HOME` 不变，只隔离本次 `DSH_HOME` 与测试工作区。
+- 浏览器由执行工程师自己的浏览器 MCP 负责：本 recipe 不启动、不关闭浏览器，也不管理它的资料目录，只交出 web 地址。
 - 不启动 Desktop，不需要专用 macOS 登录账户。
 - 不用 `headless`：headless 模板缺本插件 `inject` 所需的 `workspaceRegistry` 与 `agentPresets`，装上会停在 `pending (waiting for service: workspaceRegistry)`，要靠额外补丁改宿主组合才能跑，超出计划授权。
 
@@ -14,14 +15,15 @@
 
 - 在真实源码目录执行，不能在 `worktrees/` 或 `apm-consumers/` 下。
 - 必须让 direnv 生效，取得 Node 24 以上。实测为 Node 26.8.1。
-- 需要 `yq`；浏览器用已安装的 Google Chrome。
+- 需要 `yq`。
+- 一个可用的浏览器 MCP，能打开 URL 并在页面里点击、输入。没有 MCP 时，把地址手动粘到任意浏览器也能做，只是界面操作要手工完成。
 
 ## 脚本
 
 | 脚本 | 对应计划 | 作用 |
 |---|---|---|
 | `prepare.sh` | 2.1—2.4 | 建隔离目录、复制凭据、写角色、打包安装、设 `maxDepth=2` |
-| `start.sh` | 2.4 | 启动 web 服务，用测试专用资料目录打开 Chrome |
+| `start.sh` | 2.4 | 启动 web 服务并输出地址，交给浏览器 MCP |
 | `static-check.sh` | 3 节 T4、T5/T7、T6 | 打印计划原句与相关代码位置，供人工判断 |
 | `cleanup.sh` | 4 节 | 停本次服务、删本次创建的两份全局角色与 `BASE` |
 
@@ -37,8 +39,9 @@ bash plan/dsh-codex-agents-test-recipe/prepare.sh
 # 2. 打印源码检查材料（T4、T5/T7 共享、T6 的插件侧责任）
 bash plan/dsh-codex-agents-test-recipe/static-check.sh
 
-# 3. 启动服务并打开隔离浏览器
+# 3. 启动服务，输出地址
 bash plan/dsh-codex-agents-test-recipe/start.sh
+#    然后用你的浏览器 MCP 打开 $BASE/logs/web.url 里的地址
 
 # 4. 在网页里完成下列准备，再按第 3 节执行 T1—T7
 #    a. 「添加工作区」登记 $BASE/consumer-a 与 $BASE/consumer-b
@@ -47,7 +50,7 @@ bash plan/dsh-codex-agents-test-recipe/start.sh
 #    d. 默认模型用不了已复制凭据时，按下方「模型配置」处理
 #    T6 最后做；T5 必须在同一会话、不重启的前提下改文件后立即调用
 
-# 5. 关闭本次 Chrome 窗口，然后收尾
+# 5. 通过 MCP 关闭本次页面，然后收尾
 bash plan/dsh-codex-agents-test-recipe/cleanup.sh
 ```
 
@@ -59,13 +62,11 @@ bash plan/dsh-codex-agents-test-recipe/cleanup.sh
 
 仍不可用时，受影响项记「无法判断」，不算插件业务失败。
 
-## 收尾要求
+## 浏览器与收尾
 
-计划第 4 节要求关闭本次临时浏览器窗口后再清理。
+浏览器完全交给执行工程师的 MCP：本 recipe 不启动浏览器、不指定资料目录、不处理首次运行提示，也不结束浏览器进程。`start.sh` 只负责把地址写到 `$BASE/logs/web.url` 并打印出来。
 
-浏览器资料目录固定为 `/tmp/dca-browser-profile`（可用 `BROWSER_PROFILE=` 覆盖），不放 `$BASE` 内，原因有两个：Chrome 会把它写成 13 MB 左右，而 `cleanup.sh` 会删除整个 `$BASE`；固定路径还能让首次运行提示只出现一次。`start.sh` 会预置 `First Run` 与干净的 `Preferences`，并带 `--no-first-run --no-default-browser-check`，之后每轮复用同一份资料，不再重复弹窗。
-
-`cleanup.sh` 发现该窗口仍开着时只提示，不结束浏览器进程，`$BASE` 照常清理。
+计划第 4 节「关闭本次临时浏览器窗口」由执行工程师通过 MCP 完成。`cleanup.sh` 只停本次 web 服务、删本次创建的两份全局角色与 `$BASE`。
 
 `BASE` 从 `prepare.sh` 输出读取，或取 `/tmp/dca-test.*` 最新一个。
 
@@ -89,7 +90,7 @@ bash plan/dsh-codex-agents-test-recipe/cleanup.sh
 |---|---|
 | `prepare.sh` | 从零跑通：打包、安装到 web 配置档、`maxDepth` 写入为 2 |
 | 插件安装 | `--dump-config` 中出现 `dsh-codex-agents` 三处 |
-| `start.sh` | 服务打印地址、写入 `web.url`、Chrome 以测试专用资料目录打开 |
+| `start.sh` | 服务打印地址并写入 `web.url`；浏览器交给 MCP |
 | `static-check.sh` | 能打印三处检查所需的计划原句与代码位置 |
 
 T1—T7 的业务结果尚未正式执行，按计划第 4 节表格由本地执行工程师记录。
@@ -99,6 +100,7 @@ T1—T7 的业务结果尚未正式执行，按计划第 4 节表格由本地执
 - 全局角色写在当前账户的 `$HOME/.codex/agents/`。`prepare.sh` 同时检查文件名与 TOML 里的 `name`，任一冲突就失败，不覆盖；需先改名再重跑。角色名冲突会让 T2、T3 的场景输入失真，不能只改文件名绕过。
 - 多轮测试会留下多个 `/tmp/dca-test.*`。不传 `BASE` 时取最新一个，建议每次都显式传 `BASE=`。
 - 会话目录名由工作区绝对路径转义而来，路径含空格时需另行处理。
-- `start.sh` 前台等待服务进程；结束用 Ctrl-C 或 `kill "$(cat $BASE/logs/web.pid)"`，并关闭本次 Chrome 窗口。
+- `start.sh` 前台等待服务进程；结束用 Ctrl-C 或 `kill "$(cat $BASE/logs/web.pid)"`。
+- 浏览器 MCP 是否可用由执行工程师确认；不可用时把地址手动粘到浏览器，界面操作改由人工完成。
 - `cleanup.sh` 只在确认命令行是 `dsh web` 时才结束进程，避免进程号被回收后误杀无关进程。
 - 本次 `maxDepth=2` 只写在 `$BASE/home/profiles/web/cordis.patch.yml`，不影响用户现有配置。
