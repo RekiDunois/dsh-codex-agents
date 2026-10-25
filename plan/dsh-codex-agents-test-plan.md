@@ -171,12 +171,11 @@ test -f "$PROFILE/cordis.patch.yml"
 T6 需要允许父代理 → 子代理 → 孙代理一次合法委派，在本次配置档中使用宿主支持的 `maxDepth: 2`。本地测试工程师若尚未设置，可在测试配置档增加如下单条覆盖（同 `id` 已有覆盖时合并该条，不重复增加）：
 
 ```bash
-# 在本次新建配置档尚无 subagent 覆盖行时执行一次。
-cat >> "$PROFILE/cordis.patch.yml" <<'YAML'
-- id: subagent
-  config:
-    maxDepth: 2
-YAML
+# 在本次新建配置档尚无 subagent 覆盖行时执行一次；
+# 通过 YAML 结构追加，避免把条目直接拼接到可能是 [] 的空列表之后。
+test "$(yq '[.[] | select(.id == "subagent")] | length' "$PROFILE/cordis.patch.yml")" = 0 || exit 1
+yq -i '(. // []) += [{"id": "subagent", "config": {"maxDepth": 2}}]' \
+  "$PROFILE/cordis.patch.yml"
 ```
 
 该设置仅用于使 **T6 的合法业务路径能够运行**。保留已有宿主其它必需配置，不改变插件的工具、代理角色或委派实现；记录本次实际生效值。无需再改回 1、重启做宿主上限拒绝试验，也无需额外验证宿主 `SubagentDepthError`。
