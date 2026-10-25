@@ -30,7 +30,7 @@
 
 ## 2. 隔离环境与安装准备
 
-以下命令在 **macOS** 上、进入目标仓库的实际工作目录后执行。`BASE` 是每次正式尝试独有的仓库外目录；所有配置、会话、浏览器状态、模型日志都留在此处，不访问用户真实 `~/.codex/agents/`。已存在且适用的干净安装、构建和预检可按原记录复用，不能仅因提交编号或文档改变而重复安装。
+以下命令在 **macOS** 上、进入目标仓库的实际工作目录后，**在同一个终端会话依次执行**（保留 `BASE`、`PROFILE` 等变量）。`BASE` 是每次正式尝试独有的仓库外目录；所有配置、会话、浏览器状态、模型日志都留在此处，不访问用户真实 `~/.codex/agents/`。已存在且适用的干净安装、构建和预检可按原记录复用，不能仅因提交编号或文档改变而重复安装。
 
 ### 2.1 检查目标版本和必要命令
 
@@ -153,9 +153,25 @@ HOME="$BASE/test-home" DSH_HOME="$BASE/home" \
   "$DSH_BIN" --profile dca-test --no-open --port 0 \
   --host 127.0.0.1 > "$BASE/logs/boot.log" 2>&1 &
 printf '%s\n' "$!" > "$BASE/logs/pid"
+
+# 最多等待 60 秒取得本轮本地访问地址。这只是启动预检的停止条件，
+# 不是插件性能通过标准；进程退出或超时均保留日志后停止受影响项。
+READY=0
+for i in $(seq 1 60); do
+  if ! kill -0 "$(cat "$BASE/logs/pid")" 2>/dev/null; then break; fi
+  if grep -Eq 'https?://127\.0\.0\.1:[0-9]+' "$BASE/logs/boot.log"; then
+    READY=1
+    break
+  fi
+  sleep 1
+done
+if [ "$READY" -ne 1 ]; then
+  printf '本次实例未取得本地访问地址；检查 %s\n' "$BASE/logs/boot.log" >&2
+  false
+fi
 ```
 
-只等待本次进程实际输出的访问地址，不从默认端口推测。应设置有限等待并同时检查进程是否退出；超时或提前退出时保留 `boot.log`，按环境/启动问题处理，不能无限循环，也不能直接推定“同步扫描阻塞”。浏览器使用本次独立配置档打开日志中的本地地址，不复用生产浏览器登录资料。
+只使用本轮启动日志实际输出的访问地址，不从默认端口推测。上面的 `grep` 只检查非结构化启动日志，不参与业务结果判断。进程退出或预检超时时保留 `boot.log` 并记环境/启动问题，不能直接推定“同步扫描阻塞”。浏览器使用本次独立配置档打开日志中的本地地址，不复用生产浏览器登录资料。
 
 在网页左侧依次执行“添加工作区” → 选择 `$BASE/consumer-a` 和 `$BASE/consumer-b` → 分别进入工作区新建会话。确认界面显示两个已登记目录后继续。需要核对落盘登记时，`$BASE/home/storages/workspace.json` 的 `tables.workspaces` 是以记录键索引的对象，可以使用：
 
@@ -260,14 +276,22 @@ zstd -dc "$CHILD" | jq -r \
 1. 保持宿主默认 `maxDepth=1`。在甲工作区的父会话发送：“请调用 `spawn_agent`，使用 `task_name=t6-outer`、`agent_type=reviewer`，`message` 填‘请尝试调用 `spawn_agent`，使用 `task_name=t6-inner`、`agent_type=reviewer`，并报告实际工具结果’。”
 2. 父调用成功后，在第一层子会话的 `request/header` 核对工具列表包含 `spawn_agent`。如果它实际调用第二层委派，宿主应因深度上限返回限制错误，不得产生第二层子代理（即父会话的孙级子会话）。错误文案可随宿主变化，不要求可见文本必须逐字包含 `SubagentDepthError`。
 3. 如果模型遵守“已达层数上限”的提示而根本没有尝试第二次工具调用，这不等于证明限制生效；保留本次真实结果，并将“越限调用拦截”标为**无法判断**，不得填“通过”或为追求通过擅自换提示、提高限额重复试验。
-4. 先备份本次隔离配置文件：`cp "$PROFILE/cordis.patch.yml" "$BASE/logs/cordis-before-depth.yml"`。随后在 `$PROFILE/cordis.patch.yml` 增加对原有 `subagent` 插件行的参数覆盖（该标识来自宿主正式组合定义）：
+4. 在**同一个测试终端**执行下列命令备份隔离配置并设置宿主上限 2。此处是在已有宿主 `subagent` 配置行上做覆写，不能增加第二个实例；同名行如已出现在本地补丁，直接修改该行，勿再追加。
 
-   ```yaml
+   ```bash
+   cp "$PROFILE/cordis.patch.yml" "$BASE/logs/cordis-before-depth.yml"
+   cat >> "$PROFILE/cordis.patch.yml" <<'YAML'
    - id: subagent
      name: '@deepseek-ai/dsh-subagent'
      config:
        maxDepth: 2
+   YAML
+   HOME="$BASE/test-home" DSH_HOME="$BASE/home" \
+     "$DSH_BIN" --profile dca-test --dump-config \
+     > "$BASE/logs/config-depth-2.txt"
    ```
+
+   核对该配置档实际生效的 `subagent.maxDepth` 为 `2`，且没有补丁未匹配错误；不借修改配置增加其它产品权限。
 
 5. 使用下节统一的安全停止、启动方式重启**本次隔离 DSH 实例**；不能重启别的用户服务。确认新配置有效，在甲工作区新会话重复步骤 1 的完整调用参数。
 6. 第一层子代理应真实调用 `spawn_agent`，返回 `started subagent <id>`，并产生对应下一层子会话。仅子代理说“已经调用”或工具出现在列表里不算通过。
@@ -277,7 +301,28 @@ zstd -dc "$CHILD" | jq -r \
 
 ## 5. 安全停止、重试和清理
 
-停止或重启前从 `$BASE/logs/pid` 读取本次启动记录，使用 `ps -p <pid> -o command=` 核对进程属于**本次** `dca-test` 配置档；核对失败不得发送信号。确认后执行 `kill <pid>`，在有限时间内等待退出；未退出则记录情况、停止后续重启，不对未知进程使用强制结束。重新启动时使用 2.4 节的原命令，覆盖本轮 `boot.log` 并更新 `pid`。
+停止或重启时，在当前测试终端执行以下命令。它只处理 2.4 节记录的进程号；如果进程号已经被别的程序占用，拒绝操作。
+
+```bash
+PID="$(cat "$BASE/logs/pid")"
+CMD="$(ps -p "$PID" -o command=)" || CMD=""
+case "$CMD" in
+  *dca-test*) ;;
+  *) printf '进程不属于本次 dca-test：%s\n' "$CMD" >&2; false ;;
+esac
+kill "$PID"
+STOPPED=0
+for i in $(seq 1 30); do
+  if ! kill -0 "$PID" 2>/dev/null; then STOPPED=1; break; fi
+  sleep 1
+done
+if [ "$STOPPED" -ne 1 ]; then
+  printf '本次实例尚未退出，不重启；保留记录供处理\n' >&2
+  false
+fi
+```
+
+仅在确认上述进程已停止后，重新运行 2.4 节的启动命令，覆盖本轮 `boot.log` 并更新 `pid`。若运行时已自行退出，不得盲目重用旧进程号发送信号。
 
 - 可重试的外部故障：模型连接超时、包管理器下载失败、隔离端口占用。**同一组输入与配置最多 2 次正式尝试**；每次记录结果，确认不会重复产生有影响的子代理任务后才能重试。
 - 不可通过重试消除的业务失败：错误人格、错误工作区角色、未知角色静默回退、更新后仍是旧指令、越限成功等。原失败保留，交产品实现者；不得修改期望、配置或提示来获得通过。
