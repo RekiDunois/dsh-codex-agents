@@ -1,12 +1,25 @@
 # dsh-codex-agents 执行计划
 
-- 版本：v7
+- 版本：v8
 - 日期：2026-10-25
 - 状态：待审核
-- 上一版：v6（提交 `6b1f2a8`）；本版按验收决定人要求调整全局测试角色的隔离路径，产品方案不变
+- 上一版：v7（提交 `5cc5961`），审核意见：跨插件实例的预设注册归属与清理未写明
 - 目标 DSH 版本：`@deepseek-ai/dsh-desktop-runtime` `0.2.1-rc.3`
 
-## v7 修改摘要
+## v8 修改摘要
+
+| 项 | v7 | v8 |
+|---|---|---|
+| 注册状态归属 | 各插件实例自己的内存 Map，按 `presetId` 索引 | `preset.ts` 模块顶层按宿主注册表分组的共享状态，按 `sourceKey` 索引，另用 `byId` 记录归属 |
+| 冲突判定 | 查 `list()` 后凭编号试探 | 先认 `bySource`/`byId` 归属，确认是别人的占用才追加 `_2`、`_3` |
+| 并发控制 | 按 `presetId` 串行 | 按 `sourceKey` 串行，另有共享注册锁保护「查占用 → 选编号 → register → 记录」 |
+| 可用性确认 | `register()` 返回即视为可用 | 写「可用」记录前用 `resolve(id)` 或诊断接口确认，`broken` 则处置并透出错误 |
+| 清理责任 | 各实例卸载时各自调用 disposer | 只有顶层插件集中清理；子实例只清自己的工具注册，靠 `managedChild` 标志区分 |
+| 启动期间互斥 | 未规定 | 同来源的注册保障与本次 `startActivation` 接受放入同一串行区间，接受后即释放 |
+
+v7 的全局测试角色隔离路径，v6 的 `schemastery` 运行依赖，v5 的两处修订（子 agent 可再委派、独立 `DSH_HOME` 验收环境），v4 的构建配置与三层依赖声明，v3 的四处修订（`maxDepth` 传递、`inject` 声明、包入口与构建先后、目标运行版本），v2 的五处修订（角色合并、路径编号、同编号重注册、按需扫描、`smol-toml` 依赖）全部保留，见下文各节。
+
+### 沿用 v7 的测试隔离
 
 验收时在测试目录 `$BASE/test-home/.codex/agents/` 创建全局测试角色，测试宿主进程使用 `HOME="$BASE/test-home"`。不读写用户真实的 `~/.codex/agents/`。
 
@@ -63,6 +76,10 @@ npm 上另三个候选 `dsh-spawn-agent`、`dsh-codex-subagents`、`dsh-codex-ag
 | 子代理深度按父深度加一计算并校验上限 | 同上：`resolveChildDepth` 里 `childDepth = delegationDepthOf(parent) + 1`，超过 `maxDepth` 抛 `SubagentDepthError` |
 | **关键** 插件用 `inject` 声明必需服务 | `dsh-tool-todo/lib/index.js`：`const inject = ["tools", "sessionProjections"]`，与 `name`、`apply` 一起具名导出 |
 | 服务未就绪时插件不应直接取用 | `cordis-plugin-development/references/practices.md`：把服务放进 `inject` 或 `ctx.inject([...], ...)`，否则在不含该服务的配置里会抛错 |
+| **关键** 预设插件树与父插件共用同一宿主服务对象 | `dsh-agent-preset-registry/lib/index.js`：`createScope(this.owner, key)` 后 `scope.ctx.extend(...)`，服务沿 cordis context 继承，预设树里的插件拿到的是注册表所属 context 的同一服务 |
+| **关键** 裸包名按原生 ESM 导入，父子实例共享模块 | `cordis-plugin-loader/lib/index.js`：`import()` 对非 `cordis:` 且非相对路径的名字直接 `await import(name)`；Node 的 ESM 缓存按解析后 URL 去重，同一包只求值一次 |
+| `list()` 只给 ID 与显示信息，不证明归属 | `dsh-agent-preset-registry/lib/index.js`：`list()` 返回 `{ id, name, description, order, broken }`，没有来源字段；归属只能由注册者自己记录 |
+| `register()` 返回 disposer 但可能留下 `broken` | 同上：`activate()` 失败时写入 `record.broken` 并记 warn，`register()` 仍正常返回，故需 `resolve()` 或 `diagnostic()` 复核 |
 | `request.prompt` 是 `ContentBlock[]` 而非字符串 | `dsh-tool-subagent` 构造 request 的代码 |
 | `defineTool` 来自 `@deepseek-ai/dsh-tools` | `dsh-tool-subagent` 的 import |
 | 宿主包在 npm 上可安装，版本与内置运行时一致 | `npm view @deepseek-ai/dsh-tools versions` 末项为 `0.2.1-rc.3`；`@deepseek-ai/cordis@4.0.5`、`@deepseek-ai/schemastery@3.18.5`、`@deepseek-ai/dsh-agent-preset-registry@0.2.1-rc.3` 均存在 |
@@ -90,9 +107,9 @@ dsh-codex-agents/
 │   ├── discover.ts       目录发现：项目向上查找 + 全局目录定位
 │   ├── roster.ts         项目与全局角色合并、同名优先级
 │   ├── index-cache.ts    索引读写、mtime 比对、编号分配结果持久化
-│   ├── preset.ts         toml 转 preset definition、按需注册与替换
+│   ├── preset.ts         toml 转 preset definition、跨实例共享的注册归属与替换
 │   ├── tool.ts           spawn_agent 工具定义与派发
-│   └── base-plugins.ts   基础工具清单含本插件，给子 agent 再委派能力
+│   └── base-plugins.ts   基础工具清单含本插件，给子 agent 再委派能力并标记 managedChild
 ├── lib/                  构建产物，随包发布
 │   ├── index.js          ESM 入口
 │   └── index.d.ts        入口类型声明
@@ -222,12 +239,14 @@ flowchart TD
     K --> L
     L --> M{agent_type 存在}
     M -->|否| N[报错并列出合并后的可用角色]
-    M -->|是| O{该编号已注册且内容未变}
-    O -->|是| Q[直接派发]
-    O -->|否| P[注销旧注册 用同一编号注册新版]
+    M -->|是| O{共享状态按 sourceKey 命中且文件未变}
+    O -->|是| Q[复用同一编号]
+    O -->|否| P[锁内 注销旧注册 同编号注册 确认可用]
     P --> Q
     Q --> S[resolveMaxDepth 取宿主限制]
     S --> R[startActivation 带 agentPreset 与 maxDepth]
+    P -.-> T[归属与 disposer 写入共享状态]
+    T -.-> U[顶层插件卸载时集中清理]
 ```
 
 启动路径只有一步：注册工具。扫描、解析、注册全部推迟到第一次调用。
@@ -386,25 +405,67 @@ presetId = `dshca_${agentName}_${pathHash5}`
 - 不含文件内容哈希，因此改 toml 不换编号
 - 同项目同名角色编号稳定；不同项目同名角色因项目根不同而编号不同
 
+#### 跨实例共享状态
+
+角色预设里挂的 `dsh-codex-agents` 是**另一个插件实例**，它和顶层插件共用宿主同一个 `agentPresets` 服务。若每个实例各持一份 `presetId` Map，就会出问题：父实例已注册 `dshca_reviewer_12345`，子实例本地 Map 为空，它查 `list()` 只看到 ID、看不出归属，可能误分配 `_2`，而且拿不到父实例的注销回调，文件更新时无法按计划替换。
+
+因此在 `src/preset.ts` **模块顶层**按宿主注册表分组共享状态，各实例都取同一份：
+
+```ts
+type RecordEntry = {
+  sourceKey: string                  // 角色来源的稳定身份
+  presetId: string                   // 已分配编号，含必要时的冲突后缀
+  mtimeMs: number
+  size: number
+  dispose: () => Promise<void>       // 只由真正注册者获得并纳入共享状态
+}
+type SharedState = {
+  bySource: Map<string, RecordEntry>
+  byId: Map<string, string>          // presetId -> sourceKey，用于识别自己注册的 ID
+  sourceLocks: Map<string, Promise<unknown>>
+  registryWriteLock?: Promise<unknown>
+}
+const states = new WeakMap<object, SharedState>()
+// getSharedState(ctx.agentPresets)：同一个宿主服务返回同一个对象
+```
+
+- `sourceKey` 取 `scope + 规范化绝对来源目录 + name`，不使用文件内容哈希；同名项目覆盖全局的规则不变
+- `presetId` 仍按 `dshca_<agentName>_<pathHash5>` 计算。来源键用来认归属，编号用来向宿主注册，两者用途不同
+- 只把**本插件实际成功注册、且持有 `dispose`** 的条目记为自己拥有，不能凭 ID 前缀认领别人的预设
+- 磁盘索引不能当作「当前宿主已注册」的证据：重启后共享内存为空，仍要按索引恢复编号并正常注册
+
+这套共享状态成立的前提是同一宿主进程内父子实例引用同一模块实例与同一服务对象。已核实：加载器对裸包名走原生 `import(name)`，Node 的 ESM 缓存按解析后的 URL 去重；`createScope` 从注册表所属 context 派生，服务沿 cordis context 继承。因此 `WeakMap` 的键就是同一个 `agentPresets` 对象。
+
 #### 冲突处理
 
 编号可能撞车的两种情况：`pathHash5` 偶然相同（十万分之一），或其他插件已占用同名 id。
 
-1. 先 `await ctx.agentPresets.list()` 查现有 id
-2. 目标编号空闲则直接用
-3. 被占用且不是本插件为该角色注册的，依次尝试 `<id>_2`、`<id>_3`，直到空闲
-4. 分配结果写回索引条目的 `presetId`，下次启动直接复用，不重新试探
-5. 不注销、不改动其他插件的预设；冲突时只改自己的编号
+1. 先查 `bySource`；已存在则复用记录里的编号，不重新试探
+2. 否则读持久索引给出的 `presetId`，再查宿主 `list()`
+3. 若该 ID 在 `byId` 中属于同一 `sourceKey`，复用
+4. 若已被其他来源或其他插件占用，才依次尝试 `<id>_2`、`<id>_3`
+5. 最终编号写回索引条目的 `presetId`，下次启动直接复用
+6. 不注销、不改动其他插件的预设；冲突时只改自己的编号
+
+「查占用 → 选编号 → register → 记录归属」四步在共享的注册锁内完成，不可交错。
 
 #### 注册与替换
 
-- 内存 Map 记录 `presetId -> { file, mtimeMs, size, disposer }`
-- 该编号未注册：`register()` 并保存 disposer
-- 已注册且 `mtimeMs`、`size` 都没变：直接复用
-- 已注册但文件变了：先 `await disposer()` 注销旧注册，再用**同一编号** `register()` 新版
-- 替换期间正在运行的子代理挂在旧 generation 上，`users` 未归零前不会被销毁，继续用旧版人格跑完；新调用拿到新版
-- 注销与注册之间若有并发调用，用 Promise Map 串行化同一 `presetId` 的操作，避免出现 `agent-preset/not-found`
-- 插件卸载时统一调用所有 disposer
+- 共享记录按 `sourceKey` 保存 `{ presetId, mtimeMs, size, dispose }`
+- 未注册：`register()` 成功后把 disposer 与归属写入共享状态
+- 已注册且 `mtimeMs`、`size` 都没变：直接复用同一编号，不再次 `register()`
+- 文件变了：对同一 `sourceKey` 串行执行 `await old.dispose()` → 用**同一编号** `register()` 新版 → 更新共享记录
+- `register()` 返回不等于预设可用：宿主可能记为 `broken`。写入「可用」记录前用 `resolve(id)` 或诊断接口确认已正常加载；失败则处置本次注册并透出真实错误，不静默回退旧人格，也不重新分配编号
+- 重新注册失败时保留并报告真实错误
+- 替换期间运行中的子代理挂在旧 generation 上，`users` 未归零前不会被销毁，继续用旧版人格跑完；新调用拿到新版
+- 从 `ensurePresetRegistered` 返回编号到本次 `startActivation` 接受启动之间，同来源的替换不能抢走该编号；这一段放进同一串行区间，启动接受后立即释放，绝不锁到子代理任务结束
+- 预设加载期间子实例的 `apply` 只注册工具，不反向等待角色注册锁
+
+#### 清理责任
+
+只有**顶层插件**是共享注册生命周期的清理负责人。即使某条记录由子实例首次触发注册，disposer 也保存在共享状态里，由顶层插件卸载时集中调用。
+
+子预设内部的 `dsh-codex-agents` 卸载时只清理自己的工具注册，**不得遍历共享记录调用全部 disposer**；否则一个旧子代理退出就会把其他项目正在用的预设一起注销。`base-plugins.ts` 为内部实例传明确的 `managedChild` 标志，`index.ts` 据此区分清理责任，不增加对外工具参数。
 
 编号不变意味着预设下拉框里不会因为改文件而堆积条目。
 
@@ -469,6 +530,12 @@ export function apply(ctx, config) {
 
 启动阶段只做一件事：注册工具。没有 `warmUp`，不调 `ctx.workspaceRegistry.list()`，不遍历工作区，不预先解析任何 toml。启动耗时不随角色文件数量增长。
 
+清理责任按实例身份区分：
+
+- 顶层插件（`managedChild` 为假）：`apply` 里用 `ctx.effect()` 注册清理，卸载时遍历共享状态，集中调用全部 disposer
+- 子预设内的实例（`managedChild` 为真）：只清理自己的工具注册，不碰共享状态里的 disposer
+- 两者读同一份共享状态，但只有顶层拥有清理权；这条区分写进 `index.ts`，不对外暴露工具参数
+
 配置 schema（`schemastery`）：
 
 | 字段 | 默认 | 说明 |
@@ -494,10 +561,15 @@ export function apply(ctx, config) {
 | toml 解析失败 | 同上，不影响同目录其他文件 |
 | `agent_type` 不匹配任何 name | 报错并列出合并后的可用角色 |
 | preset 注册失败 | 报错含 preset 诊断，不静默回退到无 preset |
-| 编号被其他插件占用 | 追加 `_2`、`_3`，不覆盖对方预设 |
+| `register()` 返回但预设 `broken` | 写入可用记录前用 `resolve()` 复核；失败则处置本次注册并透出诊断 |
+| 编号被其他插件占用 | 先认归属，确认是别人的才追加 `_2`、`_3`，不覆盖对方预设 |
 | 两个项目同名角色 | 路径不同，编号不同，各自索引独立 |
 | 文件更新 | 注销旧注册后同编号重注册；运行中子代理用旧版跑完 |
-| 并发调用同一 agent | Promise Map 串行化，避免注销注册竞态 |
+| 并发调用同一 agent | 按 `sourceKey` 串行，注册与编号分配共用一把锁，避免注销注册竞态 |
+| 父实例已注册、子实例首次调用 | 子实例读同一份共享状态，按 `byId` 认出是自己人，复用编号而非追加 `_2` |
+| 子预设实例卸载 | 只清理自己的工具注册，不遍历共享 disposer；否则会注销其他项目在用的预设 |
+| 顶层插件卸载 | 集中调用共享状态里全部 disposer |
+| 注册期间子实例 `apply` | 只注册工具，不反向等待角色注册锁，避免自锁 |
 | `.dsh` 目录不可写 | 索引降级为进程内 Map，记 warn |
 | 项目根找不到 | 索引写到 `~/.dsh/agents-index.json` |
 | 会话缺少 `cwd` | 调用报错，提示无法定位项目目录 |
@@ -516,10 +588,10 @@ export function apply(ctx, config) {
 | `discover.test.mjs` | 向上查找、深度上限、返回项目根、全局目录不存在 |
 | `roster.test.mjs` | 项目覆盖全局、全局独有保留、两边都空、排序稳定 |
 | `index-cache.test.mjs` | 写入读取、mtime 与 size 失效、损坏丢弃、文件消失、编号持久化 |
-| `preset.test.mjs` | 编号格式、`pathHash5` 位数与稳定性、内容变化编号不变、冲突后缀递增、替换时先注销、`plugins` 含本插件的 `spawn_agent` 条目且 `maxDepth` 传显式值 |
+| `preset.test.mjs` | 编号格式、`pathHash5` 位数与稳定性、内容变化编号不变、冲突后缀递增、替换时先注销、`plugins` 含本插件的 `spawn_agent` 条目且 `maxDepth` 传显式值、两个实例共用同一注册表时按 `sourceKey` 复用编号而不误分配 `_2`、子实例卸载不触发共享 disposer |
 | `tool.test.mjs` | `maxDepth` 放进请求、`'provider-managed'` 被配置校验拒绝、未知 `agent_type` 报错含合并名单 |
 
-`preset.test.mjs` 的注册相关断言用假 registry 注入，不启动真实 DSH。
+`preset.test.mjs` 的注册相关断言用假 registry 注入，不启动真实 DSH；跨实例用例用同一假 registry 构造两个插件实例，验证它们拿到同一份共享状态。
 
 不写集成测试（需真实 DSH 运行时，代价高）。集成验证靠手动。`maxDepth` 传递不单独做单元测试，它由假 `subagents` 的调用参数体现，在 `tool.test.mjs` 里断言请求含 `maxDepth` 且配置为 `'provider-managed'` 时被拒绝。
 
@@ -536,6 +608,7 @@ export function apply(ctx, config) {
 9. 改 toml 后再次调用，确认新内容生效，且预设下拉框没有多出条目
 10. 另开一个项目放同名角色，确认两个项目各自生效、编号不同
 11. 在子 agent 内再调 `spawn_agent`，确认它能看到该工具；把宿主 `maxDepth` 调到 `1` 后重试，确认第二次委派被 `SubagentDepthError` 挡住而不是正常放行
+12. 父会话与子 agent 分别调用同一角色，确认两边复用同一个 preset 编号，预设下拉框里没有出现 `_2` 变体，说明跨实例共享归属生效
 
 验收环境不用 `desktop` 配置档的理由：`desktop` 由 Electron 独占，命令行拒绝操作；共用真实配置档会把索引文件写进用户已有的项目根。`headless` 与 `sdk` 配置档的默认配置没有 `agent-presets` 服务，插件 `inject` 缺项不会激活，因此也不能用。
 
@@ -555,7 +628,8 @@ export function apply(ctx, config) {
 ## 待确认的假设
 
 1. `smol-toml` 作为普通运行时依赖能被插件正式安装流程装入 profile：实施顺序第 3 步验证。失败时记录实际错误后修订方案，不自写解析器。
-2. 开发目录位置：当前会话工作区之外写文件需要授权。建议先在 `default-workspace/dsh-codex-agents/` 开发。
+2. **关键** 通过正式 `dsh plugin add` 安装后，顶层插件与子预设实例引用同一模块实例与同一 `ctx.agentPresets` 服务对象：已从源码确认加载器对裸包名走原生 `import(name)`、`createScope` 从注册表 context 派生服务，但**尚未实测安装后的模块缓存键与服务引用相等**。实施顺序第 9 步用一次运行时断言确认（两处实例各自读取同一 WeakMap 键并比较）。若不成立，改为在宿主根作用域注册一个共享服务承载归属与锁，不能用各实例私有 Map 假装共享，也不得直接改写宿主私有 `definitions`。
+3. 开发目录位置：当前会话工作区之外写文件需要授权。建议先在 `default-workspace/dsh-codex-agents/` 开发。
 
 v1 的第 2 条假设（`ctx.workspaceRegistry` 可见性）随启动扫描一起取消，不再需要。
 
@@ -568,9 +642,9 @@ v1 的第 2 条假设（`ctx.workspaceRegistry` 可见性）随启动扫描一�
 5. `discover.ts` 与测试
 6. `roster.ts` 与测试
 7. `index-cache.ts` 与测试
-8. `preset.ts` 与 `base-plugins.ts` 与测试
-9. `tool.ts`（含 `maxDepth` 传递）
-10. `index.ts` 补全：配置 schema、工具注册、服务声明定型
+8. `preset.ts` 与 `base-plugins.ts` 与测试：先落共享状态与归属，再做注册、替换、清理责任
+9. `tool.ts`（含 `maxDepth` 传递与启动接受前的同来源串行区间），并用一次运行时断言确认顶层与子实例共享同一注册表状态
+10. `index.ts` 补全：配置 schema、工具注册、服务声明定型、`managedChild` 区分清理责任
 11. 重新构建、重新打包、重新安装，按验收步骤手动验证
 
-第 2、3 步提前，是因为「能不能装、装完能不能加载」属于包格式问题，晚发现会让后面所有验证都失去载体。第 1 步必须先完成 `npm install`，否则第 2 步连 `tsc` 都跑不起来；这也是审核指出的「无法保证编译成功」的直接原因。`smol-toml` 依赖验证放在第 3 步，此时 `package.json` 的 `dependencies` 已定稿。
+第 2、3 步提前，是因为「能不能装、装完能不能加载」属于包格式问题，晚发现会让后面所有验证都失去载体。第 1 步必须先完成 `npm install`，否则第 2 步连 `tsc` 都跑不起来；这也是审核指出的「无法保证编译成功」的直接原因。两个运行期依赖（`smol-toml`、`schemastery`）的装入验证放在第 3 步，此时 `package.json` 的 `dependencies` 已定稿。
