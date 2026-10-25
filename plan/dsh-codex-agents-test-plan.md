@@ -64,7 +64,20 @@ install -m 600 "$CREDENTIAL_COPY" "$BASE/home/.credentials.yaml"
 
 受管理凭证文件本来就由 DSH 按 `$DSH_HOME/.credentials.yaml` 读取，测试实例从隔离 `DSH_HOME` 读取自己的副本，**不要求在启动后注入 `DEEPSEEK_API_KEY`**。该副本可能包含其他提供方记录，仅保存在本机私有 `BASE` 中，不回写来源，测试结束按第 5 节处理。若来源没有可用的已保存模型凭证，标为环境未就绪，不向产品报告业务失败。
 
-在**第一次正式业务请求之前**，本地测试工程师把日常 Desktop 当前生效的提供方／模型／必要端点设置落实到本次独立 `desktop` 配置档。若使用内置默认配置且能直接调用既有凭证，无须追加设置；若日常模型使用其他提供方，从其正式配置中**只迁移该模型必需的 `agent-default-model`、`llm-deepseek` 或 `llm-pi-ai` 条目**，不得复制无关插件、代理、工作区或权限覆盖。执行时在独立桌面端“设置 → 模型”核对生效的提供方和模型，记录选择及配置来源，不读取或打印凭证值。该配置接线由本地测试工程师负责；无法取得必要受控配置时先停止受影响的模型项。
+在**第一次正式业务请求之前**，本地测试工程师把日常 Desktop 当前生效的提供方／模型／必要端点设置落实到本次独立 `desktop` 配置档。若内置默认配置能够用凭证副本直接调用模型，不必迁移任何配置。其他情况由原账户的本地测试工程师读取**当前实际生效的**桌面模型配置来源，仅提取所需条目（保留原有提供方与模型，不另外更换）：
+
+```bash
+# SOURCE_MODEL_PATCH 为原桌面配置档中实际包含模型设置的文件；
+# MODEL_ROWS_COPY 是将交给测试账户的受控临时文件，仅在原账户内运行这一步。
+SOURCE_MODEL_PATCH="/原桌面端实际模型配置文件绝对路径"
+MODEL_ROWS_COPY="/受控交接目录/model-rows.yml"
+umask 077
+yq '[.[] | select(.id == "agent-default-model" or .id == "llm-deepseek" or .id == "llm-pi-ai")]' \
+  "$SOURCE_MODEL_PATCH" > "$MODEL_ROWS_COPY"
+chmod 600 "$MODEL_ROWS_COPY"
+```
+
+若原配置由多份正式覆盖文件共同决定，按原有优先级核对目标模型的相关条目后再交接，不能把不相关插件、用户工作区、工具权限或会话一起复制。测试账户在第 2.4 节创建自身配置档后再载入这些条目。执行时在独立桌面端“设置 → 模型”确认生效的提供方和模型，记录选择及配置来源，不读取或打印凭证值。无法取得必要受控配置时暂停受影响项。
 
 参考：DSH 的 [本地凭证存储说明](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/credentials/credentials-local/README.zh.md) 和 [Desktop 插件管理入口](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/apps/desktop/README.zh.md#bundled-command-runtime)。
 
@@ -129,7 +142,17 @@ HOME="$BASE/test-home" DSH_HOME="$BASE/home" "$DESKTOP_APP"
 
 ### 2.4 正式打包、安装及启用
 
-首次打开测试 Desktop，使其在 `$BASE/home/profiles/desktop` 初始化本次配置档，然后用应用菜单**完全退出**（关闭窗口不等于退出）。以下操作仅在确认这次 Desktop 已退出后执行。
+首次打开测试 Desktop，使其在 `$BASE/home/profiles/desktop` 初始化本次配置档，然后用应用菜单**完全退出**（关闭窗口不等于退出）。以下操作仅在确认这次 Desktop 已退出后执行。若前一步准备了模型配置条目副本，先在测试账户执行：
+
+```bash
+MODEL_ROWS_COPY="/实际由测试工程师交付的 model-rows.yml 绝对路径"
+test -r "$MODEL_ROWS_COPY" && command -v yq || exit 1
+MODEL_ROWS_COPY="$MODEL_ROWS_COPY" yq -i \
+  '(. // []) += (load(strenv(MODEL_ROWS_COPY)) // [])' \
+  "$PROFILE/cordis.patch.yml"
+```
+
+未准备模型配置条目副本且内置默认配置已足够时，直接跳过该段。只向**本次新建的** `desktop` 配置档加入条目，不编辑来源文件；不允许加入同一 `id` 的第二份覆盖。
 
 ```bash
 cd "$PRODUCER"
@@ -147,10 +170,13 @@ test -f "$PROFILE/cordis.patch.yml"
 
 T6 需要允许父代理 → 子代理 → 孙代理一次合法委派，在本次配置档中使用宿主支持的 `maxDepth: 2`。本地测试工程师若尚未设置，可在测试配置档增加如下单条覆盖（同 `id` 已有覆盖时合并该条，不重复增加）：
 
-```yaml
+```bash
+# 在本次新建配置档尚无 subagent 覆盖行时执行一次。
+cat >> "$PROFILE/cordis.patch.yml" <<'YAML'
 - id: subagent
   config:
     maxDepth: 2
+YAML
 ```
 
 该设置仅用于使 **T6 的合法业务路径能够运行**。保留已有宿主其它必需配置，不改变插件的工具、代理角色或委派实现；记录本次实际生效值。无需再改回 1、重启做宿主上限拒绝试验，也无需额外验证宿主 `SubagentDepthError`。
