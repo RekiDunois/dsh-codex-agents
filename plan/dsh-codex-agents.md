@@ -1,359 +1,210 @@
 # dsh-codex-agents 执行计划
 
-- 版本：v8
+- 版本：v9
 - 日期：2026-10-25
-- 状态：待审核
-- 上一版：v7（提交 `5cc5961`），审核意见：跨插件实例的预设注册归属与清理未写明
-- 目标 DSH 版本：`@deepseek-ai/dsh-desktop-runtime` `0.2.1-rc.3`
+- 状态：Proposed review status: pending（待独立审核，不能由计划作者批准）
+- 上一版：v8，提交 `1b5ff6be8d370d34b0a296bdfa7c8abfabbf641b`
+- 目标仓库：`RekiDunois/dsh-codex-agents`，分支 `plan/dsh-codex-agents-plugin`
+- 目标运行时：`@deepseek-ai/dsh-desktop-runtime@0.2.1-rc.3`
+- 需求来源：PR #1 的五条成功标准及用户于 2026-10-25 在本会话确认的“顶层集中预注册、子代理纯复用、删除编号冲突管理”方案
 
-## v8 修改摘要
+## 1. 本版核心决定
 
-| 项 | v7 | v8 |
+**主界面的顶层插件是唯一的角色与预设管理者。** 宿主加载此插件后，插件只立即注册一个全局 `spawn_agent` 工具，随后取得 `ctx.workspaceRegistry.list()` 的全部已登记工作区，加上单独的 `~/.codex/agents/` 全局目录，异步扫描 TOML 并在后台调用 `ctx.agentPresets.register()`。
+
+**子代理不再次加载 `dsh-codex-agents`。** DSH 的全局工具能被子代理继承。子代理调用的还是顶层注册的 `spawn_agent`；读取角色文件、查找角色、注册、更新与清理预设全部由顶层插件的同一管理器承担。
+
+| 项目 | v8 | v9 |
 |---|---|---|
-| 注册状态归属 | 各插件实例自己的内存 Map，按 `presetId` 索引 | `preset.ts` 模块顶层按宿主注册表分组的共享状态，按 `sourceKey` 索引，另用 `byId` 记录归属 |
-| 冲突判定 | 查 `list()` 后凭编号试探 | 先认 `bySource`/`byId` 归属，确认是别人的占用才追加 `_2`、`_3` |
-| 并发控制 | 按 `presetId` 串行 | 按 `sourceKey` 串行，另有共享注册锁保护「查占用 → 选编号 → register → 记录」 |
-| 可用性确认 | `register()` 返回即视为可用 | 写「可用」记录前用 `resolve(id)` 或诊断接口确认，`broken` 则处置并透出错误 |
-| 清理责任 | 各实例卸载时各自调用 disposer | 只有顶层插件集中清理；子实例只清自己的工具注册，靠 `managedChild` 标志区分 |
-| 启动期间互斥 | 未规定 | 同来源的注册保障与本次 `startActivation` 接受放入同一串行区间，接受后即释放 |
+| 注册时间 | 每次调用时按需注册 | 顶层加载后后台预注册，调用时仅由顶层按最新文件状态补充/更新 |
+| 子代理 | 预设内再次加载本插件 | 直接继承宿主全局 `spawn_agent` |
+| 注册归属 | 跨插件实例 `WeakMap`、`bySource`、`byId` | 顶层实例的单份内存注册记录 |
+| 编号 | 五位路径哈希，冲突时 `_2`、`_3` | 路径和名称生成确定性长哈希；拒绝真实占用，不改号 |
+| 索引 | `.dsh/agents-index.json` 持久化 | 不需要磁盘索引；启动重新扫描 |
+| 清理 | 子实例需 `managedChild` 标志避免误清理 | 仅顶层拥有注销回调，子代理无本插件实例 |
+| 工作区 | 调用时向上寻找最近的目录 | 顶层一次列出已登记工作区，监听登记变化 |
 
-v7 的全局测试角色隔离路径，v6 的 `schemastery` 运行依赖，v5 的两处修订（子 agent 可再委派、独立 `DSH_HOME` 验收环境），v4 的构建配置与三层依赖声明，v3 的四处修订（`maxDepth` 传递、`inject` 声明、包入口与构建先后、目标运行版本），v2 的五处修订（角色合并、路径编号、同编号重注册、按需扫描、`smol-toml` 依赖）全部保留，见下文各节。
+删除 v8 的 `managedChild`、`WeakMap` 跨实例共享、预设中再次加载本插件、`byId` 归属推断、编号后缀、持久索引、跨实例同模块假设与验证。历史审核评论不作为实施者必须拼接的第二套方案。
 
-### 沿用 v7 的测试隔离
+这是验收决定人主动修改正式行为，受影响审核关口为 P1—P4。与此次决定无关的构建、安装、解析库和宿主接口约定沿用旧版，以下正文是唯一有效实施方案。
 
-验收时在测试目录 `$BASE/test-home/.codex/agents/` 创建全局测试角色，测试宿主进程使用 `HOME="$BASE/test-home"`。不读写用户真实的 `~/.codex/agents/`。
+## 2. 目标、范围与必须保持的行为
 
-### 沿用 v6 的依赖决定
+1. 在已登记工作区根目录的 `.codex/agents/*.toml` 中发现角色后，`spawn_agent(task_name, agent_type, message)` 能启动具有该 TOML 角色指令的子代理。
+2. 不同项目同名角色隔离。全局角色与工作区角色按 `name` 合并，项目同名优先；全局独有角色仍可调用。
+3. 未知 `agent_type` 清楚报错，并列出该调用者可见的项目/全局合并名单，不静默使用其他预设。
+4. 插件启动不等待逐目录扫描和预设加载，主界面不会因为同步扫描停顿。
+5. 修改已有 TOML 后，下一次调用该角色使用新指令，不需要重启；已经运行的旧子代理继续使用旧版。
+6. 预设由顶层插件统一后台注册、更新、注销，子代理不读 TOML、不注册预设、不启动第二份插件管理器。
+7. 子代理有 `spawn_agent` 可继续委派；每次调用使用 DSH 当前生效的宿主 `maxDepth` 上限。
 
-| 项 | v5 | v6 |
-|---|---|---|
-| `schemastery` 依赖层级 | 放在 `devDependencies`，靠宿主间接提供 | 移到 `dependencies`，由插件自己的依赖声明保证运行期可加载 |
-| 依赖分层理由 | 按「宿主包与非宿主包」划分 | 按「运行期是否 import」划分：运行期用到的库放 `dependencies`，共享服务放 `peerDependencies`，仅编译期用放 `devDependencies` |
+**本版范围**：
 
-v5 的两处修订（子 agent 可再委派、独立 `DSH_HOME` 验收环境），v4 的构建配置与三层依赖声明，v3 的四处修订（`maxDepth` 传递、`inject` 声明、包入口与构建先后、目标运行版本），v2 的五处修订（角色合并、路径编号、同编号重注册、按需扫描、`smol-toml` 依赖）全部保留，见下文各节。
+- 工作区指宿主 `workspaceRegistry.list()` 已登记的目录，其 `path` 是规范化的绝对路径；全局 `~/.codex/agents/` 不属于工作区列表，单独扫描。
+- 只扫描每个工作区**根目录**的 `.codex/agents/`。会话位于工作区子目录时，仍选该工作区的角色目录。取消 v8 向任意父目录查找最近角色目录的 `searchParents`、`maxParentDepth`。
+- 调用者 `cwd` 不匹配任何已登记工作区时，只能选择全局角色；不假装创建新工作区、不读取其它未知项目。
+- 不承诺文件保存时立即刷新全部预设；保证**下一次调用之前**由顶层检查相关目录并更新。工作区增删通过宿主事件在后台响应。
+- `model`、`model_reasoning_effort`、`sandbox_mode`、`mcp_servers`、`skills.config` 暂不支持；不增加额外子代理工具权限、不恢复进程重启前的子代理。
+- 子代理结束与结果通知仍由 DSH 原生运行时处理，`spawn_agent` 三参数与原生 `delivery: 'parent'` 不变。
 
-## 目标
+## 3. 决策依据与来源
 
-写一个 DSH 插件，暴露与 Codex 同签名的 `spawn_agent` 工具，让同一份 SKILL.md 能在 Codex 和 DSH 两边通用。角色定义直接复用 Codex 的 `.codex/agents/*.toml`，支持项目级与全局两级，DSH 侧通过注册 agent preset 实现人格与工具隔离。
+### 正式要求
 
-## 成功标准
+- [PR #1](https://github.com/RekiDunois/dsh-codex-agents/pull/1)：原有五条产品成功标准。
+- 用户于 2026-10-25 确认的本轮修改：顶层异步扫描所有工作区和全局角色，统一注册；子代理只使用顶层内容；简化重复编号相关状态。
+- [Project Consensus](https://app.notion.com/p/3d60101a85f3815a8c43f271f2b4d91d) 与 [Plan Reviewer Rule](https://app.notion.com/p/3e80101a85f3817a94cbc6eca1a76a5c)。正式测试由 [Test Engineer Rule](https://app.notion.com/p/3d80101a85f380d8a8f5ce528141e253) 及独立测试计划负责。
 
-1. 项目里有 `.codex/agents/*.toml` 时，`spawn_agent(task_name, agent_type, message)` 能起一个带该 toml 人格的子 agent。
-2. 不同项目各自用自己的 `.codex/agents/`，同名角色互不干扰。
-3. 找不到 `agent_type` 时明确报错并列出可用角色，不静默回退。
-4. 启动不被阻塞，UI 不因扫描卡顿。
-5. 改 toml 后，下一次调用生效，无需重启。
+### 宿主实现依据
 
-成功标准 3 的「可用角色」指项目与全局合并后的名单。
+以下源码版本统一为 `deepseek-ai/deepseek-harness@22ddee3792402c3e70ec5f86a63c3e3e895a2f60`：
 
-## 命名
-
-| 项 | 值 | 说明 |
-|---|---|---|
-| 包名 | `dsh-codex-agents` | npm 可用，已核实 |
-| 工具名 | `spawn_agent` | 与 Codex 一致 |
-| preset id | `dshca_<agentName>_<pathHash5>` | 编号只由角色名与目录路径决定，见下文 |
-
-npm 上另三个候选 `dsh-spawn-agent`、`dsh-codex-subagents`、`dsh-codex-agent-bridge` 也可用；`dsh-agent-bridge` 已被占用。
-
-## 已核实的技术前提
-
-目标运行版本：`@deepseek-ai/dsh-desktop-runtime` `0.2.1-rc.3`（本机 `/Applications/DeepSeek Harness.app` 内置）。下表所列包均在该运行时内核实，版本同为 `0.2.1-rc.3`：`@deepseek-ai/dsh-agent-preset-registry`、`@deepseek-ai/dsh-subagent`、`@deepseek-ai/dsh-tool-subagent`、`@deepseek-ai/dsh-subagent-spawn-in-process`。依据一栏写的是这些包内的 `lib/index.js`；升级 DSH 后需按新版本复核标注「关键」的条目。
-
-| 事实 | 依据 |
+| 关键决策 | 已确认的宿主事实 |
 |---|---|
-| **关键** `SubagentStartRequest` 有 `agentPreset` 字段 | `dsh-subagent/lib/index.js`：`composition: { agentPreset: request.agentPreset }` |
-| `request.persona` 已从请求移除 | `applyChildOverrides` 读 `composition.persona`，但 `startActivation` 只填 `agentPreset` |
-| preset 是设置子 agent 人格与工具集的唯一公开路径 | 同上；非公开路径为 `reserveChildComposition`，`dsh-subagent-registry` 在用 |
-| **关键** `ctx.agentPresets.register(definition)` 是公开 API，返回 disposer | `dsh-agent-preset-registry/lib/index.js`：`return unregister` |
-| `register()` 立即 `activate()` 并建完整插件树 | 同上：`record.ready = this.activate(record)` |
-| id 已存在时 `register()` 抛错，不会覆盖 | 同上：`if (this.definitions.has(definition.id)) throw new Error("Duplicate agent preset: ...")` |
-| **关键** 注销后运行中的子代理仍可用旧版 | 同上：disposer 标记 `retired` 后调 `collect()`，而 `collect()` 在 `generation.users !== 0` 时直接返回 |
-| **关键** `spawn` provider 支持独立预设与深度限制 | `dsh-subagent-spawn-in-process/lib/index.js`：`capabilities` 中 `agentOptions`、`agentPreset`、`outputSchema`、`depthLimit` 全为 `true`；`inheritsParentContext: false` |
-| **关键** 深度限制需由调用方放进请求 | `dsh-tool-subagent/lib/index.js`：`const maxDepth = runtimeCtx.subagents.resolveMaxDepth(config.maxDepth)`，随后 `...maxDepth !== void 0 ? { maxDepth } : {}` 拼进 `request` |
-| `resolveMaxDepth(configured)` 的取值规则 | `dsh-subagent/lib/index.js`：传 `"provider-managed"` 返回 `undefined`，传数字返回该数字，未传则读宿主配置 `maxDepth`（默认 `1`） |
-| 请求带 `maxDepth` 要求 provider 有 `depthLimit` | `dsh-subagent/lib/index.js`：`when: request.maxDepth !== void 0, cap: "depthLimit"`，缺失时抛 `UNSUPPORTED_CAPABILITY` |
-| 子代理深度按父深度加一计算并校验上限 | 同上：`resolveChildDepth` 里 `childDepth = delegationDepthOf(parent) + 1`，超过 `maxDepth` 抛 `SubagentDepthError` |
-| **关键** 插件用 `inject` 声明必需服务 | `dsh-tool-todo/lib/index.js`：`const inject = ["tools", "sessionProjections"]`，与 `name`、`apply` 一起具名导出 |
-| 服务未就绪时插件不应直接取用 | `cordis-plugin-development/references/practices.md`：把服务放进 `inject` 或 `ctx.inject([...], ...)`，否则在不含该服务的配置里会抛错 |
-| **关键** 预设插件树与父插件共用同一宿主服务对象 | `dsh-agent-preset-registry/lib/index.js`：`createScope(this.owner, key)` 后 `scope.ctx.extend(...)`，服务沿 cordis context 继承，预设树里的插件拿到的是注册表所属 context 的同一服务 |
-| **关键** 裸包名按原生 ESM 导入，父子实例共享模块 | `cordis-plugin-loader/lib/index.js`：`import()` 对非 `cordis:` 且非相对路径的名字直接 `await import(name)`；Node 的 ESM 缓存按解析后 URL 去重，同一包只求值一次 |
-| `list()` 只给 ID 与显示信息，不证明归属 | `dsh-agent-preset-registry/lib/index.js`：`list()` 返回 `{ id, name, description, order, broken }`，没有来源字段；归属只能由注册者自己记录 |
-| `register()` 返回 disposer 但可能留下 `broken` | 同上：`activate()` 失败时写入 `record.broken` 并记 warn，`register()` 仍正常返回，故需 `resolve()` 或 `diagnostic()` 复核 |
-| `request.prompt` 是 `ContentBlock[]` 而非字符串 | `dsh-tool-subagent` 构造 request 的代码 |
-| `defineTool` 来自 `@deepseek-ai/dsh-tools` | `dsh-tool-subagent` 的 import |
-| 宿主包在 npm 上可安装，版本与内置运行时一致 | `npm view @deepseek-ai/dsh-tools versions` 末项为 `0.2.1-rc.3`；`@deepseek-ai/cordis@4.0.5`、`@deepseek-ai/schemastery@3.18.5`、`@deepseek-ai/dsh-agent-preset-registry@0.2.1-rc.3` 均存在 |
-| 宿主包之间用 peer 声明，不各自复制实例 | 已安装插件 `dsh-workspace-mcp`、`dsh-opencode-go` 的 `peerDependencies` 写 `@deepseek-ai/cordis` 与 `@deepseek-ai/dsh-*`，只在 `devDependencies` 里锁具体版本 |
-| `dsh-tool-subagent` 把 `schemastery` 放在 `dependencies` | `npm view @deepseek-ai/dsh-tool-subagent@0.2.1-rc.3 dependencies`：`@deepseek-ai/schemastery ~3.18.5`、`zod 4.4.3` |
-| 已装插件对 `schemastery` 的层级取决于运行期是否引用 | `dsh-subagent-codex` 运行期引用，放 `dependencies`（`~3.18.5`）；`dsh-workspace-mcp` 的 `lib/index.js` 中 `schemastery` 出现 0 次，放 `devDependencies`（`^3.18.5`） |
-| DSH 内置 Node 24.21，无 `node:toml` | 实测 `import('node:toml')` 失败 |
+| 列出工作区 | [WorkspaceRegistry.list()](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/workspace/workspace/src/index.ts) 同步读取已登记的规范目录 `path`；不代表所有磁盘目录 |
+| 感知工作区新增、移除 | [WorkspaceFeed](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/api/workspace-controller/src/feed.ts) 使用 `ctx.on('domain/changed')` 观察 `workspace` 存储域变化 |
+| 全局工具供父子代理调用 | [ToolsService.register()](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/core/tools/src/index.ts#L121-L152) 在未标记 agent scope 的宿主上下文注册全局工具，[工具可见性](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/core/tools/src/index.ts#L191-L229) 合并全局与代理局部工具，明确限制才会隐藏 |
+| 注册预设、替换和保留旧任务 | [AgentPresetRegistry](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/preset/agent-preset-registry/src/index.ts#L93-L153) 的 `register` 返回 `dispose`、拒绝重复 ID；`resolve` 可报告 `broken`；卸载旧代际时保留仍在使用的版本 |
+| 委派层数 | [SubagentRuntime](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/subagent/subagent/src/index.ts) 的 `resolveMaxDepth()` 返回宿主当前限制；[原生工具](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/subagent/tool-subagent/src/index.ts#L314-L339) 把该值写入 `startActivation` 请求 |
 
-「注销后运行中子代理仍可用旧版」是本版编号策略成立的前提：同一编号注销再注册，新旧两个 generation 并存，正在跑的子代理挂在旧 generation 上，`users` 未归零前不会被销毁。
+选择“顶层预注册 + 全局工具”是因为宿主已支持这些操作。替代方案 v8 的“子代理内加载同一插件 + 跨实例共享”和旧的“首次调用才注册”均能满足部分目标，但增加管理状态或不符合用户新增的预注册要求。启动时后台注册会消耗时间和内存，使用限并发及逐批让出事件循环控制。
 
-## 插件结构
-
-```
-dsh-codex-agents/
-├── package.json          name=dsh-codex-agents, type=module, exports, files, dsh.bundle.patch
-├── cordis.patch.yml      insert 一行，id=dsh-codex-agents
-├── tsconfig.json         唯一的编译配置，构建与类型检查共用
-├── locale/
-│   ├── en.json           meta.title / meta.description
-│   └── zh.json
-├── icon.svg
-├── src/                  TypeScript 源码
-│   ├── index.ts          插件入口、配置 schema、服务声明、只注册工具
-│   ├── toml.ts           TOML 解析 + 字段校验
-│   ├── discover.ts       目录发现：项目向上查找 + 全局目录定位
-│   ├── roster.ts         项目与全局角色合并、同名优先级
-│   ├── index-cache.ts    索引读写、mtime 比对、编号分配结果持久化
-│   ├── preset.ts         toml 转 preset definition、跨实例共享的注册归属与替换
-│   ├── tool.ts           spawn_agent 工具定义与派发
-│   └── base-plugins.ts   基础工具清单含本插件，给子 agent 再委派能力并标记 managedChild
-├── lib/                  构建产物，随包发布
-│   ├── index.js          ESM 入口
-│   └── index.d.ts        入口类型声明
-└── test/*.test.mjs       node:test 单元测试，跑在 lib 的构建产物上
-```
-
-`roster.ts` 专门负责合并与优先级，避免 `discover.ts` 同时承担查找和决策两件事。编译配置只有一个 `tsconfig.json`，`build`、`typecheck` 两个脚本都指向它，不再出现第二份配置文件名。
-
-### 可安装包格式
-
-`package.json` 必须让 DSH 的加载器找得到运行入口，并声明编译所需的工具与宿主依赖：
-
-```json
-{
-  "name": "dsh-codex-agents",
-  "version": "0.1.0",
-  "type": "module",
-  "main": "./lib/index.js",
-  "types": "./lib/index.d.ts",
-  "exports": {
-    ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" },
-    "./package.json": "./package.json",
-    "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg"
-  },
-  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
-  "files": ["lib/**/*.js", "lib/**/*.d.ts", "cordis.patch.yml",
-            "locale/*.json", "icon.svg", "README.md", "LICENSE"],
-  "dependencies": {
-    "@deepseek-ai/schemastery": "3.18.5",
-    "smol-toml": "^1.9.1"
-  },
-  "peerDependencies": {
-    "@deepseek-ai/cordis": ">=4.0.5 <5",
-    "@deepseek-ai/dsh-tools": ">=0.2.1-rc.3 <0.3.0",
-    "@deepseek-ai/dsh-subagent": ">=0.2.1-rc.3 <0.3.0",
-    "@deepseek-ai/dsh-agent-preset-registry": ">=0.2.1-rc.3 <0.3.0"
-  },
-  "devDependencies": {
-    "@deepseek-ai/cordis": "4.0.5",
-    "@deepseek-ai/dsh-tools": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-subagent": "0.2.1-rc.3",
-    "@deepseek-ai/dsh-agent-preset-registry": "0.2.1-rc.3",
-    "@types/node": "^22.20.0",
-    "typescript": "^5.9.3"
-  },
-  "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test test/*.test.mjs",
-    "prepack": "npm run build"
-  }
-}
-```
-
-依赖分三层，各管一件事：
-
-| 层 | 内容 | 理由 |
-|---|---|---|
-| `dependencies` | `@deepseek-ai/schemastery`、`smol-toml` | 插件在运行期自己 import 的库：`schemastery` 用于构造并导出 `Config`，`smol-toml` 用于解析角色文件。二者不共享宿主服务实例，必须由插件自己的依赖声明保证可加载 |
-| `peerDependencies` | `@deepseek-ai/cordis`、`dsh-tools`、`dsh-subagent`、`dsh-agent-preset-registry` | 这些是宿主提供的服务与共享实例，插件必须复用宿主那一份，不能自带副本 |
-| `devDependencies` | 上表四个宿主包的具体版本、`@types/node`、`typescript` | 只用于编译与类型检查；宿主包在此锁定到与目标运行时一致的版本，避免类型漂移 |
-
-peer 的写法照抄工作区里已安装的第三方插件：`@deepseek-ai/cordis` 用 `>=4.0.5 <5` 的大版本区间，宿主包用 `>=0.2.1-rc.3 <0.3.0`。`dsh-tools` 必须在 peer 列，因为 `defineTool` 由它导出，`inject` 里的 `tools` 服务也由它提供。
-
-`schemastery` 放 `dependencies` 而不是 `devDependencies`，判断依据是运行期是否 import 它。插件入口要 `export const Config = z.object({...})`，模块加载时就会求值，属于运行期依赖；若只放 dev，正式安装后靠宿主间接提供，插件自己的声明并不保证它存在。同一运行时里的 `dsh-tool-subagent` 与 `dsh-subagent-codex` 都把 `schemastery` 放在 `dependencies`（`~3.18.5`），而 `dsh-workspace-mcp` 放 `devDependencies` 是因为它的运行入口里完全没有引用（`grep -c schemastery lib/index.js` 为 0），只在构建期使用。本插件属于前一种。
-
-### 编译配置 `tsconfig.json`
-
-```json
-{
-  "compilerOptions": {
-    "target": "ES2023",
-    "lib": ["ES2023"],
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "rootDir": "src",
-    "outDir": "lib",
-    "declaration": true,
-    "declarationMap": false,
-    "sourceMap": false,
-    "strict": true,
-    "skipLibCheck": true,
-    "types": ["node"],
-    "verbatimModuleSyntax": true,
-    "noEmitOnError": true
-  },
-  "include": ["src/**/*.ts"],
-  "exclude": ["lib", "test", "node_modules"]
-}
-```
-
-要点：
-
-- `rootDir: src`、`outDir: lib` 保证产出的相对路径就是 `lib/index.js` 与 `lib/index.d.ts`，与 `main`、`types`、`exports` 完全对齐
-- `declaration: true` 才会生成 `lib/index.d.ts`；`exports["."].types` 指向它，缺这个文件类型解析会失败
-- `module`／`moduleResolution` 用 `NodeNext`，与 `"type": "module"` 的 ESM 输出一致，避免生成 CommonJS 后加载器按 ESM 读取失败
-- `types: ["node"]` 只需 Node 类型；不引入 DOM，防止误用浏览器 API
-- `noEmitOnError: true` 保证类型错误时不产出半成品入口
-
-约定：
-
-- `exports["."]` 指向 `lib/index.js`，`main`、`types` 与之对应，三者都不可指向 `src/`
-- `dsh.bundle.patch` 指向根目录的 `cordis.patch.yml`
-- `files` 覆盖运行所需全部文件：构建产物、补丁、locale、图标；`prepack` 保证打包前一定有产物
-- `locale/en.json` 与 `locale/zh.json` 提供 `meta.title`、`meta.description`，`icon.svg` 为包内相对路径
-- 构建器不指定，`tsc` 只是其中一种；若换构建器，须继续保证 `lib/index.js` 与 `lib/index.d.ts` 两个产物存在，并保留 `typescript` 之外的依赖声明不变
-
-构建产物与安装验证的先后：先有 `lib/index.js`，再谈正式安装。`npm pack` 出的包必须包含 `lib/index.js` 与 `lib/index.d.ts`，否则安装后加载器没有可执行入口，或类型解析失败。
-
-## 数据流
+## 4. 业务流与状态归属
 
 ```mermaid
 flowchart TD
-    A[inject 就绪 tools subagents agentPresets] --> B[apply 同步注册 spawn_agent 工具]
-    B --> C[启动结束 不做任何扫描]
-
-    D[spawn_agent 调用] --> E[取 exec.agent.session.header.cwd]
-    E --> F[从 cwd 向上找项目 .codex/agents]
-    E --> G[定位全局 ~/.codex/agents]
-    F --> H[读索引并比对 mtime]
-    G --> H
-    H --> I{有文件变化}
-    I -->|是| J[重新解析变化的 toml]
-    I -->|否| K[用索引里的元数据]
-    J --> L[合并项目与全局角色 同名项目优先]
-    K --> L
-    L --> M{agent_type 存在}
-    M -->|否| N[报错并列出合并后的可用角色]
-    M -->|是| O{共享状态按 sourceKey 命中且文件未变}
-    O -->|是| Q[复用同一编号]
-    O -->|否| P[锁内 注销旧注册 同编号注册 确认可用]
-    P --> Q
-    Q --> S[resolveMaxDepth 取宿主限制]
-    S --> R[startActivation 带 agentPreset 与 maxDepth]
-    P -.-> T[归属与 disposer 写入共享状态]
-    T -.-> U[顶层插件卸载时集中清理]
+  A[宿主加载顶层插件] --> B[注册唯一全局 spawn_agent]
+  B --> C[订阅工作区增删事件]
+  C --> D[后台枚举所有工作区及全局角色目录]
+  D --> E[解析 TOML 并建立主插件角色表]
+  E --> F[顶层后台 register preset]
+  F --> G[顶层保存当前 presetId 与 disposer]
+  H[主代理或子代理调用全局 spawn_agent] --> I[同一个顶层工具处理]
+  I --> J[按调用者 cwd 选择工作区]
+  J --> K[顶层核对相关目录最新状态并等待注册]
+  K --> L{存在指定 agent_type?}
+  L -->|否| M[报错并列可用角色]
+  L -->|是| N[取对应已注册 presetId]
+  G --> N
+  N --> O[读取当前宿主 maxDepth 并 startActivation]
+  O --> P[子代理继承全局 spawn_agent 可再次调用]
 ```
 
-启动路径只有一步：注册工具。扫描、解析、注册全部推迟到第一次调用。
+**状态与职责**：
 
-## 分模块设计
+- 宿主 `workspaceRegistry` 管理工作区的登记、路径及变更通知。
+- 仅顶层 `manager.ts` 管理目录扫描、角色数据、注册任务、固定编号和注销回调。
+- 宿主 `agentPresets` 管理预设及其运行中旧版本。
+- 宿主 `subagents` 负责启动、生命周期、深度限制和父子消息。
+- 子代理只作为全局工具调用者；不存在子插件管理器，也没有跨插件实例共享对象。
 
-### 1. 目录发现 `discover.ts`
+## 5. 交付文件、包配置与安装
+
+```text
+dsh-codex-agents/
+├── package.json
+├── cordis.patch.yml
+├── tsconfig.json
+├── locale/en.json
+├── locale/zh.json
+├── icon.svg
+├── src/
+│   ├── index.ts          顶层加载、服务声明、全局工具和生命周期
+│   ├── workspaces.ts     已登记工作区列表、当前会话归属、变更事件
+│   ├── toml.ts           TOML 解析、字段与名称校验
+│   ├── roster.ts         项目与全局角色合并
+│   ├── preset.ts         预设内容、确定性 ID、注册及替换
+│   ├── base-plugins.ts   子代理基础工具，不包含本插件
+│   ├── manager.ts        唯一顶层角色表与后台队列
+│   └── tool.ts           唯一全局 spawn_agent 定义与派发
+├── lib/                  发布的 ESM 及声明产物
+└── test/                 生产模块必要的单元测试
+```
+
+取消 `src/index-cache.ts`、旧 `discover.ts` 的任意父目录搜索以及 `.dsh/agents-index.json`。不为本功能写额外通用持久状态程序。
+
+保留 v8 的发布约定：
+
+- `package.json`：`name=dsh-codex-agents`、`type=module`、`main=./lib/index.js`、`types=./lib/index.d.ts`、`exports["."]` 对应同一对产物；`files` 包含 `lib/**/*.js`、`lib/**/*.d.ts`、`cordis.patch.yml`、`locale/*.json`、`icon.svg` 及说明文件；`dsh.bundle.patch=./cordis.patch.yml`。
+- 普通 `dependencies` 包含运行期 `@deepseek-ai/schemastery@3.18.5`、`smol-toml@^1.9.1`。
+- `peerDependencies` 使用宿主实例：`@deepseek-ai/cordis >=4.0.5 <5`，`@deepseek-ai/dsh-tools`、`@deepseek-ai/dsh-subagent`、`@deepseek-ai/dsh-agent-preset-registry`、新增 `@deepseek-ai/dsh-workspace` 和 `@deepseek-ai/dsh-storage-domain` 均按目标宿主版本 `>=0.2.1-rc.3 <0.3.0`；`devDependencies` 锁定对应目标包版本，并提供 `typescript` 与 `@types/node`。
+- `tsconfig.json` 一份：`target=ES2023`、`module=NodeNext`、`moduleResolution=NodeNext`、`rootDir=src`、`outDir=lib`、`declaration=true`、`strict=true`、`noEmitOnError=true`。
+- `npm run build` 生成 `lib/index.js` 和 `lib/index.d.ts`，`npm run typecheck` 不写产物，`prepack` 负责打包前构建。安装采用正式 `dsh plugin add`，不使用开发路径、手改消费者或复制产物。
+- `Config` 由 `schemastery` 定义最小有效配置，工具名固定 `spawn_agent`，provider 固定 `spawn`，目录固定 `.codex/agents`。移除插件级 `maxDepth`、`indexFileName`、`searchParents`、`maxParentDepth`、冲突后缀等配置。
+
+## 6. 顶层插件加载与工作区扫描
+
+### 6.1 顶层入口
+
+`src/index.ts` 必须声明：
 
 ```ts
-findProjectAgentsDir(cwd: string, maxDepth: number): { agentsDir: string; projectRoot: string } | undefined
-findGlobalAgentsDir(home: string): string | undefined
-```
+export const name = 'dsh-codex-agents'
+export const inject = ['tools', 'subagents', 'agentPresets', 'workspaceRegistry']
+export const Config = /* schemastery 最小配置 */
 
-`findProjectAgentsDir` 从 `cwd` 向上逐级查找 `.codex/agents/`，找到最近的返回，同时返回项目根（`agentsDir` 的上两级）。到文件系统根仍未找到返回 `undefined`。`findGlobalAgentsDir` 检查 `~/.codex/agents` 是否存在。
-
-两个函数都只检查目录是否存在，不读内容，不合并结果。合并由 `roster.ts` 负责。
-
-### 2. 角色合并 `roster.ts`
-
-```ts
-interface RoleSource {
-  agent: CodexAgent
-  file: string          // 绝对路径
-  hashBase: string      // 算 pathHash5 的路径：项目角色用项目根，全局角色用全局角色目录
-  scope: 'project' | 'global'
-}
-
-mergeRoster(project: RoleSource[], global: RoleSource[]): RoleSource[]
-```
-
-规则：
-
-- 以 `name` 为键合并，项目条目覆盖全局同名条目，全局条目保留位置
-- 项目角色目录不存在时，合并结果就是全局角色
-- 项目与全局都不存在时返回空数组，由调用方报错
-- 合并结果按 `name` 排序，保证报错信息里的角色列表稳定
-
-这是相对 v1 的行为变化：v1 找到项目目录就丢弃全局目录，现在始终两处都看。
-
-### 3. TOML 解析 `toml.ts`
-
-依赖 `smol-toml`，作为普通运行时依赖写进 `dependencies`，由插件正式安装流程装入 profile。
-
-```ts
-interface CodexAgent {
-  name: string                    // 必填
-  description: string             // 必填
-  developerInstructions: string   // 必填
-  model?: string                  // 读取但忽略
-  modelReasoningEffort?: string   // 读取但忽略
-  sandboxMode?: string            // 读取但忽略
-}
-```
-
-校验规则：
-
-- 缺 `name` / `description` / `developer_instructions` 抛错，错误信息含文件路径
-- `name` 不匹配 `^[A-Za-z0-9_-]+$` 抛错
-- 未知键忽略，与 Codex 行为一致
-- 解析失败只影响该文件，不影响同目录其他文件
-
-不设「依赖加载失败就自己写解析器」的分支。若正式安装时 `smol-toml` 确实无法加载，记录实际错误、影响范围和复现步骤，据此修订方案后再实施，不在计划里预留替代实现。
-
-### 4. 索引缓存 `index-cache.ts`
-
-路径：找到项目根时用 `<projectRoot>/.dsh/agents-index.json`；没有项目根（会话目录不在任何项目内）时用 `~/.dsh/agents-index.json`。不存在则创建 `.dsh` 目录。
-
-索引记录的是**该会话可见的合并名单**，不是单个目录的扫描结果：
-
-```json
-{
-  "version": 2,
-  "scannedAt": "2026-10-25T00:00:00.000Z",
-  "projectRoot": "/path/to/project",
-  "agents": [
-    {
-      "name": "reviewer",
-      "scope": "project",
-      "dir": "/path/to/project/.codex/agents",
-      "file": "reviewer.toml",
-      "mtimeMs": 1761300000000,
-      "size": 812,
-      "presetId": "dshca_reviewer_81639",
-      "error": null
-    },
-    {
-      "name": "implementation_reviewer",
-      "scope": "global",
-      "dir": "/home/user/.codex/agents",
-      "file": "implementation-reviewer.toml",
-      "mtimeMs": 1761200000000,
-      "size": 640,
-      "presetId": "dshca_implementation_reviewer_13368",
-      "error": null
-    }
-  ]
+export function apply(ctx, config) {
+  // 构造唯一主插件 manager
+  // 通过 ctx.tools.register 注册全局 spawn_agent
+  // 订阅工作区变化，登记退出时统一清理
+  // apply 返回后才调度后台扫描；不 await 全部注册
 }
 ```
 
-- 只存元数据，不存 persona 正文；真相始终在 toml 里
-- `presetId` 持久化，保证跨进程重启后编号一致，也让冲突后缀稳定
-- 读缓存后对每个文件 `stat`，比对 `mtimeMs` 与 `size`，任一变化则重新解析该文件并更新该条目
-- 缓存损坏或 `version` 不符则丢弃并全量重扫，不报错
-- 文件消失则从索引移除该条目
-- `.dsh` 不可写时降级为进程内 Map，记 warn；此时编号冲突后缀只在本进程内稳定
+`inject` 保证四个服务可用。顶层工具注册发生在没有代理作用域的主插件中，不允许在子代理局部重复注册。`apply` 不逐目录读文件、不同步注册预设；使用后续事件循环任务运行扫描队列，避免自身激活尚未完成时等待预设插件树。
 
-### 5. preset 构建与注册 `preset.ts`
+### 6.2 首次后台预注册
+
+1. 取得 `ctx.workspaceRegistry.list()` 的所有规范化工作区 `path`，另从进程 `HOME` 定位 `~/.codex/agents/`。没有目录视为空，不创建、不扫描用户无关目录。
+2. 主管理器使用异步文件读取列举每个根目录下 `*.toml`，解析并维护分别按工作区、全局分类的角色名单。
+3. 将当前角色送入同一个限制并发数量的后台注册队列，按小批处理并主动让出事件循环。`register` 会加载完整的预设插件树，所以不允许无界并发预注册。
+4. 每个角色只发布完成 `register` 且经过 `resolve` 诊断为可用的 `presetId`。单个错误文件或预设只影响自身。
+5. 如果工具调用先于该角色扫描结束，主管理器等待或优先处理该角色/目录的后台任务，不能把“还在加载”误报成未知角色。
+
+### 6.3 工作区增删
+
+- 在主插件中监听 `ctx.on('domain/changed', ...)`；只对 `domain === 'workspace'` 的登记变化安排一次合并更新，再读 `workspaceRegistry.list()` 得到权威目录列表，不自己解释历史工作区数据。
+- 新增工作区：后台扫描其固定角色目录并注册；删除工作区：把其项目角色移出可选名单并注销主插件持有的预设，保留其它工作区与全局角色。
+- 初始扫描与工作区删除同时发生时，处理任务之前重新确认工作区仍登记；已失效的结果不得重新加入名单。正在运行的旧子代理交给宿主旧代际管理。
+
+### 6.4 角色文件变化
+
+- 下一次委派之前，**由主插件管理器**核对相关工作区和全局目录的当前文件名单、`mtimeMs` 和 `size`，识别新增、删除及修改，只重新解析有变化的文件。
+- 同名项目角色始终优先于全局；有文件新增时角色能进入名单。扫描和更新统一串行处理同一角色。
+- 不采用文件监听作为正确性前提；主插件后台初扫 + 工作区增删事件 + 调用前增量核对保证上述需求。子代理没有独立扫描流程。
+
+## 7. 角色解析、预设编号与更新
+
+### 7.1 TOML 与名单
+
+`smol-toml` 解析 `name`、`description`、`developer_instructions` 三个必填字段；`name` 必须符合 `^[A-Za-z0-9_-]+$`。非法文件报告路径与原因，且不影响其它合法文件。角色名以 TOML 的 `name` 为准，不从文件名推导。其它已知但本版暂不支持的字段不映射为预设配置；未知字段忽略。
+
+`roster.ts` 以 `name` 合并当前工作区角色和全局角色，项目优先，全局独有仍保留，报错名单按名称排序。**同一目录下两个文件声明相同 `name` 时不任意覆盖**，将该名字标为有冲突，不作为可用角色；跨目录的同名则按项目优先规则处理。
+
+### 7.2 单份内存状态与简单编号
+
+唯一主插件保存：
+
+```ts
+type RoleKey = string // scope + 规范化来源目录 + name
+type PresetRecord = {
+  presetId: string
+  file: string
+  mtimeMs: number
+  size: number
+  dispose: () => Promise<void>
+}
+// manager 按 RoleKey 维护有效记录、错误状态及短暂排队任务
+```
+
+- `RoleKey` 由角色来源类型、规范化工作区/全局目录和 TOML `name` 唯一描述。
+- `presetId` 固定为 `dshca_<name>_<hash24>`，其中 `hash24` 是上述三项按固定次序编码后的 `SHA-256` 前 **24 位十六进制字符**。不包含 TOML 正文，因此更新文件不改编号；不同工作区同名角色有不同来源标识。
+- 不做 `_2`、`_3` 等后缀分配，不维护 `byId` 所有权推断，也不使用磁盘缓存恢复编号。
+- 宿主本身会在重复 ID 时拒绝 `register`。如果真正发生编号占用或哈希碰撞，本插件明确报错，**不覆盖其他定义、不静默改号**。这保留最小安全处理，不恢复旧版复杂的冲突调解。
+
+### 7.3 预设内容
+
+`src/preset.ts`：
 
 ```js
 {
@@ -368,283 +219,107 @@ interface CodexAgent {
 }
 ```
 
-`BASE_PLUGINS`（`base-plugins.ts`）从 `standard.patch.yml` 摘取，不含 `tool-workflow` / `tool-plugin-manager`，但**必须含本插件自己的 `spawn_agent`**，让子 agent 能继续委派：
+`BASE_PLUGINS` 保留 v8 的基础能力：`dsh-agent-instructions`、`dsh-time-context`、按平台启用的命令工具、`dsh-tool-fs`、`dsh-tool-fs-search`、`dsh-tool-jobs`、`dsh-skill-filesystem`、`dsh-tool-skill`、`dsh-tool-todo`。**明确删除其中的 `dsh-codex-agents`**；全局 `spawn_agent` 在代理执行时从宿主工具表继承。
 
-| 插件 | 说明 |
-|---|---|
-| `dsh-agent-instructions` | AGENTS.md 加载，maxBytes 65536 |
-| `dsh-time-context` | 时间上下文 |
-| `dsh-tool-bash` / `dsh-tool-pwsh` | 按平台 disabled |
-| `dsh-tool-fs` | 文件读写 |
-| `dsh-tool-fs-search` | 搜索 |
-| `dsh-tool-jobs` | 后台任务 |
-| `dsh-skill-filesystem` + `dsh-tool-skill` | skill 能力 |
-| `dsh-tool-todo` | 待办 |
-| `dsh-codex-agents` | 本插件，给子 agent 同一套 `spawn_agent` |
+### 7.4 注册、替换、注销
 
-给子 agent 挂本插件时：
+- 首次出现：主插件解析文件、计算固定 ID，调用 `ctx.agentPresets.register`；保存它返回的真实注销回调，并调用 `resolve(id)` 检查 `broken`。失败时清理本次注册并报告错误，不把失败定义视为可用。
+- 文件未变化：复用已经注册的同一预设，不二次调用 `register`。
+- 文件已变化：同一 `RoleKey` 串行执行旧 `dispose`、用同编号 `register` 新预设、`resolve` 复核、替换内存记录。若注册失败，返回真实错误；绝不悄悄复用旧指令或重新分配编号。
+- 同一角色的**核对和获得注册、直到当前 `startActivation` 接受启动**放在同一短暂串行区间，防止提交给宿主前被并发注销；子代理任务开始后立刻释放锁，不锁到任务结束。不同角色不需要全局互斥。
+- 删除文件或工作区时主插件清除相应可选记录并注销其自己的定义。运行中的旧子代理由宿主按照预设代际保留规则完成，不强制终止。
+- 主插件卸载时停止接纳新调用和后台队列，撤销事件监听，等待已经开始的注册操作收尾，然后仅调用自己持有的全部 `dispose`，清空内存。重新激活重新扫描，不持有跨生命周期状态；子代理没有清理责任。
 
-- 引用写法与宿主一致，预设树按配置档的 `baseUrl` 解析行名，写包名 `dsh-codex-agents` 即可，与 `cordis.patch.yml` 里 `insert` 的写法相同；包名不带 scope，解析时按配置档目录查找，与 `@deepseek-ai/dsh-persona` 这类带 scope 的写法并存不冲突
-- 必须把父请求里实际生效的 `maxDepth` 原样传给子预设，不能省，也不能减一：`resolveChildDepth` 用的是绝对层数（`delegationDepthOf(parent) + 1` 与同一个上限比大小），减一会在正常层数就提前抛 `SubagentDepthError`
-- 父请求里没有 `maxDepth`（宿主未配置）时，子预设也不传：子 agent 内本插件再调 `resolveMaxDepth(config.maxDepth)` 时读的是同一个 `subagents` 服务配置，宿主默认值是 `1`，因此全链路仍然共用同一个上限，不会因为少传而放开
-- 子 agent 的 `inject` 三项同样需要就绪，`tools` / `subagents` / `agentPresets` 在预设作用域内由宿主提供，不需要额外声明
-- 加一层就多一次插件树构建，首次调用延迟随之增加；这是可再委派的代价，第一版接受
+## 8. 全局 `spawn_agent` 委派
 
-不加 `tool-subagent` 的理由是签名与 `spawn_agent` 不一致（它接 `prompt: ContentBlock[]` 且默认工具名 `subagent`），混用会让同一份 SKILL.md 在 DSH 侧失效。只用本插件，工具名与参数才与 Codex 完全一致。
+`src/tool.ts` 的工具签名固定：
 
-不用 `tool-workflow` / `tool-plugin-manager` 的理由与 v4 相同：两者都能绕开 `maxDepth` 单独发起执行，属于本版不打算开放的入口。
-
-#### 编号生成
-
-```ts
-presetId = `dshca_${agentName}_${pathHash5}`
-```
-
-- `pathHash5` 由路径算出：`sha256(path)` 取前 4 字节读作无符号整数，对 `100000` 取余，左补零成 5 位数字
-- 项目角色的路径取**项目根目录**（`.codex/agents` 的上两级），全局角色的路径取全局角色目录 `~/.codex/agents`
-- 不含文件内容哈希，因此改 toml 不换编号
-- 同项目同名角色编号稳定；不同项目同名角色因项目根不同而编号不同
-
-#### 跨实例共享状态
-
-角色预设里挂的 `dsh-codex-agents` 是**另一个插件实例**，它和顶层插件共用宿主同一个 `agentPresets` 服务。若每个实例各持一份 `presetId` Map，就会出问题：父实例已注册 `dshca_reviewer_12345`，子实例本地 Map 为空，它查 `list()` 只看到 ID、看不出归属，可能误分配 `_2`，而且拿不到父实例的注销回调，文件更新时无法按计划替换。
-
-因此在 `src/preset.ts` **模块顶层**按宿主注册表分组共享状态，各实例都取同一份：
-
-```ts
-type RecordEntry = {
-  sourceKey: string                  // 角色来源的稳定身份
-  presetId: string                   // 已分配编号，含必要时的冲突后缀
-  mtimeMs: number
-  size: number
-  dispose: () => Promise<void>       // 只由真正注册者获得并纳入共享状态
-}
-type SharedState = {
-  bySource: Map<string, RecordEntry>
-  byId: Map<string, string>          // presetId -> sourceKey，用于识别自己注册的 ID
-  sourceLocks: Map<string, Promise<unknown>>
-  registryWriteLock?: Promise<unknown>
-}
-const states = new WeakMap<object, SharedState>()
-// getSharedState(ctx.agentPresets)：同一个宿主服务返回同一个对象
-```
-
-- `sourceKey` 取 `scope + 规范化绝对来源目录 + name`，不使用文件内容哈希；同名项目覆盖全局的规则不变
-- `presetId` 仍按 `dshca_<agentName>_<pathHash5>` 计算。来源键用来认归属，编号用来向宿主注册，两者用途不同
-- 只把**本插件实际成功注册、且持有 `dispose`** 的条目记为自己拥有，不能凭 ID 前缀认领别人的预设
-- 磁盘索引不能当作「当前宿主已注册」的证据：重启后共享内存为空，仍要按索引恢复编号并正常注册
-
-这套共享状态成立的前提是同一宿主进程内父子实例引用同一模块实例与同一服务对象。已核实：加载器对裸包名走原生 `import(name)`，Node 的 ESM 缓存按解析后的 URL 去重；`createScope` 从注册表所属 context 派生，服务沿 cordis context 继承。因此 `WeakMap` 的键就是同一个 `agentPresets` 对象。
-
-#### 冲突处理
-
-编号可能撞车的两种情况：`pathHash5` 偶然相同（十万分之一），或其他插件已占用同名 id。
-
-1. 先查 `bySource`；已存在则复用记录里的编号，不重新试探
-2. 否则读持久索引给出的 `presetId`，再查宿主 `list()`
-3. 若该 ID 在 `byId` 中属于同一 `sourceKey`，复用
-4. 若已被其他来源或其他插件占用，才依次尝试 `<id>_2`、`<id>_3`
-5. 最终编号写回索引条目的 `presetId`，下次启动直接复用
-6. 不注销、不改动其他插件的预设；冲突时只改自己的编号
-
-「查占用 → 选编号 → register → 记录归属」四步在共享的注册锁内完成，不可交错。
-
-#### 注册与替换
-
-- 共享记录按 `sourceKey` 保存 `{ presetId, mtimeMs, size, dispose }`
-- 未注册：`register()` 成功后把 disposer 与归属写入共享状态
-- 已注册且 `mtimeMs`、`size` 都没变：直接复用同一编号，不再次 `register()`
-- 文件变了：对同一 `sourceKey` 串行执行 `await old.dispose()` → 用**同一编号** `register()` 新版 → 更新共享记录
-- `register()` 返回不等于预设可用：宿主可能记为 `broken`。写入「可用」记录前用 `resolve(id)` 或诊断接口确认已正常加载；失败则处置本次注册并透出真实错误，不静默回退旧人格，也不重新分配编号
-- 重新注册失败时保留并报告真实错误
-- 替换期间运行中的子代理挂在旧 generation 上，`users` 未归零前不会被销毁，继续用旧版人格跑完；新调用拿到新版
-- 从 `ensurePresetRegistered` 返回编号到本次 `startActivation` 接受启动之间，同来源的替换不能抢走该编号；这一段放进同一串行区间，启动接受后立即释放，绝不锁到子代理任务结束
-- 预设加载期间子实例的 `apply` 只注册工具，不反向等待角色注册锁
-
-#### 清理责任
-
-只有**顶层插件**是共享注册生命周期的清理负责人。即使某条记录由子实例首次触发注册，disposer 也保存在共享状态里，由顶层插件卸载时集中调用。
-
-子预设内部的 `dsh-codex-agents` 卸载时只清理自己的工具注册，**不得遍历共享记录调用全部 disposer**；否则一个旧子代理退出就会把其他项目正在用的预设一起注销。`base-plugins.ts` 为内部实例传明确的 `managedChild` 标志，`index.ts` 据此区分清理责任，不增加对外工具参数。
-
-编号不变意味着预设下拉框里不会因为改文件而堆积条目。
-
-### 6. `spawn_agent` 工具 `tool.ts`
-
-签名与 Codex 对齐，保持三参数：
-
-```
+```text
 spawn_agent(
-  task_name: string,    // 合法下划线名，传给 label 与日志
-  agent_type: string,   // 必须等于 toml 的 name 字段
-  message: string       // 自足的任务描述
+  task_name: string,
+  agent_type: string,
+  message: string
 )
 ```
 
-`execute` 流程：
+执行顺序：
 
-1. 取 `exec.agent.session.header.cwd`，缺失则报错
-2. `findProjectAgentsDir` 找项目角色目录与项目根；`findGlobalAgentsDir` 找全局目录
-3. 读索引，对两处目录的文件做 `stat` 比对，只重新解析变化的文件
-4. `mergeRoster` 得到合并名单
-5. 名单中找 `name === agent_type`
-   - 找不到则抛错：`Unknown agent_type "xxx". Available: a, b, c. (scanned <项目目录>, <全局目录>)`
-6. `ensurePresetRegistered` 得到 `presetId`，必要时完成注销与重注册
-7. 取深度限制：`const maxDepth = ctx.subagents.resolveMaxDepth(config.maxDepth)`
-8. 派发：
+1. 从 `exec.agent.session.header.cwd` 取得真实调用者工作目录。用已登记的工作区规范路径匹配工作区；子目录属于包含它的最长已登记根目录，匹配不到则仅有全局角色。缺 cwd 时明确报错。
+2. 调用主插件管理器确认当前工作区及全局角色表已完成相关扫描与更新，遇到未结束的后台任务则等待该任务。**执行入口是主插件注册的全局工具，不是子实例函数。**
+3. 从项目优先、全局兜底的名单中以 `agent_type` 精确查找。找不到时抛 `Unknown agent_type ... Available: ...`，列出调用者实际可见角色，不泄露其它项目私有名单。
+4. 找到已注册的 `presetId`，在同角色短锁保护下，**每次调用** `ctx.subagents.resolveMaxDepth()` 获取宿主当前限制，然后由宿主 `startActivation` 接受启动：
 
-```js
-await ctx.subagents.startActivation({
+```ts
+const maxDepth = ctx.subagents.resolveMaxDepth()
+const started = await ctx.subagents.startActivation({
   provider: 'spawn',
   label: task_name,
   request: {
     prompt: [{ type: 'text', text: message }],
     parent: exec.agent,
     agentPreset: presetId,
-    ...maxDepth !== void 0 ? { maxDepth } : {},
+    ...(maxDepth === undefined ? {} : { maxDepth }),
   },
   signal: exec.signal,
   delivery: 'parent',
 })
+// 返回包含 started.childId 的启动结果
 ```
 
-9. 返回 `started subagent <childId>`，与官方 `subagent` 工具输出格式一致
+5. 子代理调用同一个 `spawn_agent` 时再次按照它自己会话的 `cwd` 选择角色，由同一主管理器执行；预设中不保存层数，不复制父请求层数。宿主 `SubagentDepthError` 和其它正式委派错误直接报告。
 
-第 7 步与原生 `subagent` 工具写法一致：由 `resolveMaxDepth` 决定取哪个上限，值不为 `undefined` 才放进请求。这样省略配置时子代理仍受宿主 `maxDepth` 约束，不会绕过宿主委派深度上限；配置成 `'provider-managed'` 时才由 provider 自行处理，但 `spawn` provider 有 `depthLimit` 能力，第一版不支持该取值，配置校验里直接拒绝。
+## 9. 错误、并发与关键反例
 
-首次调用要读 TOML、建插件树，因此比后续调用慢；这是按需扫描的直接代价，接受。
-
-### 7. 插件入口 `index.ts`
-
-```ts
-export const name = 'dsh-codex-agents'
-export const inject = ['tools', 'subagents', 'agentPresets']
-export const Config = /* schemastery schema */
-
-export function apply(ctx, config) {
-  ctx.tools.register(spawnAgentTool(ctx, config))
-}
-```
-
-`inject` 声明三项必需服务：`tools` 用于注册工具，`subagents` 用于取深度限制与派发，`agentPresets` 用于按需注册预设。这三项在 `apply` 之前就绪，不能靠加载顺序碰运气；声明之后插件在不含它们的配置里会保持未激活，而不是在 `apply` 里抛 `undefined`。
-
-启动阶段只做一件事：注册工具。没有 `warmUp`，不调 `ctx.workspaceRegistry.list()`，不遍历工作区，不预先解析任何 toml。启动耗时不随角色文件数量增长。
-
-清理责任按实例身份区分：
-
-- 顶层插件（`managedChild` 为假）：`apply` 里用 `ctx.effect()` 注册清理，卸载时遍历共享状态，集中调用全部 disposer
-- 子预设内的实例（`managedChild` 为真）：只清理自己的工具注册，不碰共享状态里的 disposer
-- 两者读同一份共享状态，但只有顶层拥有清理权；这条区分写进 `index.ts`，不对外暴露工具参数
-
-配置 schema（`schemastery`）：
-
-| 字段 | 默认 | 说明 |
-|---|---|---|
-| `toolName` | `spawn_agent` | 工具名 |
-| `provider` | `spawn` | subagent provider |
-| `agentsDirName` | `.codex/agents` | 相对项目根 |
-| `searchParents` | `true` | 是否向上查找 |
-| `maxParentDepth` | `8` | 向上层数上限 |
-| `maxDepth` | 不传，走宿主值 | 传给 `resolveMaxDepth`；只接受非负安全整数，拒绝 `'provider-managed'` |
-| `indexFileName` | `.dsh/agents-index.json` | 相对项目根 |
-
-`workspaceRegistry` 相关配置项全部移除，因为不再需要枚举工作区。
-
-## 边界与失败处理
-
-| 场景 | 行为 |
+| 场景 | 预期方案行为 |
 |---|---|
-| 项目无 `.codex/agents/` | 只用全局角色；全局也没有则调用报错 |
-| 项目与全局都有同名角色 | 项目优先；全局该名字条目不生效，不报错 |
-| 全局独有角色 | 项目存在角色目录时仍可调用 |
-| toml 缺必填字段 | 该条目不进合并名单，索引记 `error`；调用时报错含原因 |
-| toml 解析失败 | 同上，不影响同目录其他文件 |
-| `agent_type` 不匹配任何 name | 报错并列出合并后的可用角色 |
-| preset 注册失败 | 报错含 preset 诊断，不静默回退到无 preset |
-| `register()` 返回但预设 `broken` | 写入可用记录前用 `resolve()` 复核；失败则处置本次注册并透出诊断 |
-| 编号被其他插件占用 | 先认归属，确认是别人的才追加 `_2`、`_3`，不覆盖对方预设 |
-| 两个项目同名角色 | 路径不同，编号不同，各自索引独立 |
-| 文件更新 | 注销旧注册后同编号重注册；运行中子代理用旧版跑完 |
-| 并发调用同一 agent | 按 `sourceKey` 串行，注册与编号分配共用一把锁，避免注销注册竞态 |
-| 父实例已注册、子实例首次调用 | 子实例读同一份共享状态，按 `byId` 认出是自己人，复用编号而非追加 `_2` |
-| 子预设实例卸载 | 只清理自己的工具注册，不遍历共享 disposer；否则会注销其他项目在用的预设 |
-| 顶层插件卸载 | 集中调用共享状态里全部 disposer |
-| 注册期间子实例 `apply` | 只注册工具，不反向等待角色注册锁，避免自锁 |
-| `.dsh` 目录不可写 | 索引降级为进程内 Map，记 warn |
-| 项目根找不到 | 索引写到 `~/.dsh/agents-index.json` |
-| 会话缺少 `cwd` | 调用报错，提示无法定位项目目录 |
-| 请求的 `maxDepth` 被 provider 拒绝 | 派发前不校验能力，交给 `startActivation` 抛 `UNSUPPORTED_CAPABILITY`；错误原样透出 |
-| 深度超过上限 | `startActivation` 抛 `SubagentDepthError`，错误原样透出，不吞掉 |
-| 子 agent 内再调 `spawn_agent` | 允许；子 agent 的工具集含本插件，靠 `maxDepth` 约束层数 |
-| 子 agent 拿到的是父请求的同一个上限 | 挂子 agent 的预设时传父请求里实际生效的 `maxDepth`，不减一；父请求没有该字段时也不传，回落到宿主配置的同一个值 |
+| 初始后台扫描未完成即调用 | 等待相关工作区/角色任务，不能错误返回未知角色 |
+| 不同项目有相同角色名 | 由各自来源生成固定不同编号，按实际调用者工作区选角色 |
+| 项目/全局同名 | 项目优先，其他工作区仍可使用全局角色 |
+| 无工作区或无匹配角色 | 仅全局可用；不存在则报错并列出当前可用角色 |
+| TOML 缺字段或错误 | 报对应文件与原因，其他合法角色仍可启动 |
+| TOML 更新之后立即调用 | 主插件先检查并以同编号替换，新调用看到新指令 |
+| 旧子代理仍在运行时更新 | 宿主保留旧代际直到旧任务结束，新任务用新版 |
+| 注册 ID 已被外部占用 | 宿主拒绝，本插件报错，不覆盖、不自动改号 |
+| 新登记或移除工作区 | 顶层增量扫描或注销；旧的后台任务不得重新注册已移除工作区 |
+| 子代理递归调用 | 调用顶层全局工具，不另建管理器、不会读 TOML/注册预设 |
+| 超过委派深度 | 宿主原生 `SubagentDepthError`，不得绕过上限 |
+| 主插件卸载后又加载 | 由旧主插件清理它持有的注册，新实例重新扫描，不复用失效内存 |
 
-## 测试
+必须保持的约束：
 
-用 `node:test`，只测纯函数，不依赖 DSH 运行时：
+- 每个角色来源在一个顶层插件实例内至多有一条有效当前注册记录。
+- 只有顶层实例读角色文件、调用 `agentPresets.register`、持有和调用 `dispose`。
+- 同一路径同名角色的编号保持稳定，更新不增加下拉框中不同编号条目。
+- 同名角色在项目之间不串用；错误列表也只来自调用者可见的项目和全局角色。
+- 任何委派从宿主当前配置取得层数，不因子代理调用来源改变上限。
 
-| 测试文件 | 覆盖 |
+## 10. 影响、已知限制与责任
+
+| 类别 | 内容 |
 |---|---|
-| `toml.test.mjs` | 正常解析、缺字段、非法 name、未知键忽略、多行字符串、`"""` 嵌套 |
-| `discover.test.mjs` | 向上查找、深度上限、返回项目根、全局目录不存在 |
-| `roster.test.mjs` | 项目覆盖全局、全局独有保留、两边都空、排序稳定 |
-| `index-cache.test.mjs` | 写入读取、mtime 与 size 失效、损坏丢弃、文件消失、编号持久化 |
-| `preset.test.mjs` | 编号格式、`pathHash5` 位数与稳定性、内容变化编号不变、冲突后缀递增、替换时先注销、`plugins` 含本插件的 `spawn_agent` 条目且 `maxDepth` 传显式值、两个实例共用同一注册表时按 `sourceKey` 复用编号而不误分配 `_2`、子实例卸载不触发共享 disposer |
-| `tool.test.mjs` | `maxDepth` 放进请求、`'provider-managed'` 被配置校验拒绝、未知 `agent_type` 报错含合并名单 |
+| `intended_change` | 主插件后台预注册所有已登记工作区和全局角色；一个全局工具供父子调用；删去跨实例注册 |
+| `preserved_behavior` | 三参数接口、项目优先、跨工作区隔离、找不到报错、文件更新后下次调用生效、旧任务沿用旧人格、宿主层数限制 |
+| `approved_behavior_change` | 2026-10-25 用户明确要求顶层统一注册、子代理纯复用、精简编号状态；工作区以宿主已登记列表为来源 |
+| `prohibited_side_effect` | 不同步阻塞插件启动，不扫描其它无关项目，不在子代理重复注册，不覆盖外部预设，不放宽宿主递归限制 |
+| `unresolved impact` | 预注册所有角色可能占用更多内存和后台 CPU；采用单一队列、有限并发及让出事件循环，不把预注册完成作为 UI 启动前提 |
 
-`preset.test.mjs` 的注册相关断言用假 registry 注入，不启动真实 DSH；跨实例用例用同一假 registry 构造两个插件实例，验证它们拿到同一份共享状态。
+**责任归属**：工作区名单属于宿主 `workspaceRegistry`；扫描、解析、注册记录与注销属于主插件；预设代际属于宿主 `agentPresets`；派发与递归上限属于宿主 `subagents`。没有额外子插件所有者。
 
-不写集成测试（需真实 DSH 运行时，代价高）。集成验证靠手动。`maxDepth` 传递不单独做单元测试，它由假 `subagents` 的调用参数体现，在 `tool.test.mjs` 里断言请求含 `maxDepth` 且配置为 `'provider-managed'` 时被拒绝。
+**已知限制**：预注册的全部角色可能出现在宿主预设下拉框；路径变化后固定编号会变化；不做常驻文件监听，但调用前由顶层核对保证新指令；宿主缺少 `workspaceRegistry` 时主插件按 `inject` 保持未激活并由宿主提示缺少服务；不自动处理极罕见的 ID 占用。
 
-## 验收步骤
+## 11. 实施顺序及交接
 
-1. `npm install` 后跑 `npm run build` 与 `npm run typecheck` 均通过，`npm pack` 产物含 `lib/index.js`、`lib/index.d.ts`、`cordis.patch.yml`、locale 与图标
-2. 在测试目录建立独立的 `DSH_HOME` 与 `HOME`（`HOME="$BASE/test-home"`），用 web 自制配置档（`dsh --profile <名> --from-default-profile web`）及 `dsh plugin --profile <名> add <安装包>` 安装，确认 `smol-toml` 与 `@deepseek-ai/schemastery` 两个运行期依赖随包装入，插件处于已激活而非报错状态。所有测试 DSH 启动、重启均使用相同的 `HOME` 与 `DSH_HOME`
-3. 重启该配置档
-4. 在测试项目的 `.codex/agents/` 放项目角色，并在测试目录 `$BASE/test-home/.codex/agents/` 放全局独有角色；测试 DSH 进程使用 `HOME="$BASE/test-home"`，不接触用户真实全局角色目录
-5. 新开会话，让模型调用 `spawn_agent(task_name: "t1", agent_type: "<项目角色名>", message: "...")`
-6. 问子 agent「你的职责是什么」，确认应答出 toml 里的内容
-7. 同一会话调用全局独有角色，确认也能起子 agent
-8. 确认 `.dsh/agents-index.json` 已生成，且含项目与全局两条
-9. 改 toml 后再次调用，确认新内容生效，且预设下拉框没有多出条目
-10. 另开一个项目放同名角色，确认两个项目各自生效、编号不同
-11. 在子 agent 内再调 `spawn_agent`，确认它能看到该工具；把宿主 `maxDepth` 调到 `1` 后重试，确认第二次委派被 `SubagentDepthError` 挡住而不是正常放行
-12. 父会话与子 agent 分别调用同一角色，确认两边复用同一个 preset 编号，预设下拉框里没有出现 `_2` 变体，说明跨实例共享归属生效
+1. **建立可安装骨架**：`package.json`、`cordis.patch.yml`、`tsconfig.json`、语言文件、图标、`src/index.ts` 最小可加载入口；补齐新增 `dsh-workspace`、`dsh-storage-domain` 类型/宿主依赖。
+2. **先打通正式安装载体**：`npm install`、`npm run build`、`npm run typecheck`、`npm pack`，然后在独立 `DSH_HOME` 的 `web` 配置档用正式 `dsh plugin add` 加载产物；失败应修生产包，不手改消费目录。
+3. **工作区接入**：实现 `workspaces.ts` 的 `workspaceRegistry.list()` 获取全部目录、全局 `HOME` 路径、增删事件与调用者 `cwd` 的工作区对应。
+4. **解析与名单**：实现 `toml.ts`、`roster.ts`；按 TOML `name` 校验，项目/全局合并。
+5. **预设定义**：实现 `preset.ts`、`base-plugins.ts`；固定来源 ID，保留基础工具与角色人格，确保 `BASE_PLUGINS` **不含本插件**。
+6. **顶层注册管理器**：实现 `manager.ts` 的异步初扫、限并发预注册、角色变更刷新、`resolve` 可用诊断、注销与卸载；去掉 `index-cache.ts`、磁盘索引、`WeakMap` 和后缀流程。
+7. **统一全局工具**：实现 `tool.ts`，主插件仅注册一次 `spawn_agent`；所有调用按工作区选预设，读取当时宿主 `maxDepth`，调用 `startActivation`，子代理通过全局工具再委派。
+8. **最终接线与交付**：`index.ts` 只管理主插件生命周期；确保注册在 `apply` 返回后异步运行。对目标生产版本重新构建、正式安装，交给测试计划负责人按已批准业务范围进行验证。
 
-验收环境不用 `desktop` 配置档的理由：`desktop` 由 Electron 独占，命令行拒绝操作；共用真实配置档会把索引文件写进用户已有的项目根。`headless` 与 `sdk` 配置档的默认配置没有 `agent-presets` 服务，插件 `inject` 缺项不会激活，因此也不能用。
+**隔离要求**：正式产品测试使用独立 `HOME="$BASE/test-home"` 和 `DSH_HOME`，全局测试角色位于 `$BASE/test-home/.codex/agents/`。不得操作真实用户全局目录、配置档或生产会话；已认可的正式安装和执行记录按适用范围复用。
 
-## 已知限制（第一版接受）
+**独立测试计划**：本轮只修订 `plan/dsh-codex-agents.md`。另一个文件 `plan/dsh-codex-agents-test-plan.md` 的“首次调用才注册、预设内再加载插件、索引文件生成”等旧预期如有，应由测试计划负责人按受影响范围修订；不能根据本执行计划自行增加用例、命令或测试前置条件。
 
-1. preset 注册后出现在预设下拉框，所有项目可见；属观感问题，不影响功能
-2. `model` / `model_reasoning_effort` 忽略，子 agent 继承调用者模型
-3. `sandbox_mode` 忽略，不强制只读；与 Codex 行为一致，Codex 本身也不强制
-4. `mcp_servers` / `skills.config` 忽略
-5. 首次调用某 agent 会慢几百毫秒，因需读 TOML 并建插件树
-6. 不做文件监听，靠调用时比对 `mtimeMs` 与 `size`
-7. DSH 进程重启后，旧子代理不恢复，也不保留历史预设；跨重启恢复推迟到后续版本
-8. 子 agent 的工具集与主 agent 同源，都会加载本插件的 `spawn_agent`；层数只靠 `maxDepth` 约束，不做按角色区分工具集，权限收紧推迟到后续版本
-9. `pathHash5` 只保证同机稳定；换机器或换用户目录后编号会变
-10. 子 agent 再委派时每次都要在预设作用域内重建一层插件树，层数越深首次调用越慢；本版不做预热
-
-## 待确认的假设
-
-1. `smol-toml` 作为普通运行时依赖能被插件正式安装流程装入 profile：实施顺序第 3 步验证。失败时记录实际错误后修订方案，不自写解析器。
-2. **关键** 通过正式 `dsh plugin add` 安装后，顶层插件与子预设实例引用同一模块实例与同一 `ctx.agentPresets` 服务对象：已从源码确认加载器对裸包名走原生 `import(name)`、`createScope` 从注册表 context 派生服务，但**尚未实测安装后的模块缓存键与服务引用相等**。实施顺序第 9 步用一次运行时断言确认（两处实例各自读取同一 WeakMap 键并比较）。若不成立，改为在宿主根作用域注册一个共享服务承载归属与锁，不能用各实例私有 Map 假装共享，也不得直接改写宿主私有 `definitions`。
-3. 开发目录位置：当前会话工作区之外写文件需要授权。建议先在 `default-workspace/dsh-codex-agents/` 开发。
-
-v1 的第 2 条假设（`ctx.workspaceRegistry` 可见性）随启动扫描一起取消，不再需要。
-
-## 实施顺序
-
-1. 项目骨架：`package.json`（`main`／`types`／`exports`／`files`／三层依赖）、`cordis.patch.yml`、`tsconfig.json`、locale、图标，然后 `npm install` 装齐编译依赖
-2. 最小可加载入口：`src/index.ts` 先只做 `inject` 声明与空 `apply`，跑通 `npm run build` 得到 `lib/index.js` 与 `lib/index.d.ts`，再跑 `npm run typecheck` 确认无类型错误
-3. 打包与正式安装验证：`npm pack` 确认产物含 `lib/index.js` 与 `lib/index.d.ts`，装入独立 DSH_HOME 的 web 自制配置档，确认插件能激活且 `smol-toml` 随依赖装入
-4. `toml.ts` 与测试
-5. `discover.ts` 与测试
-6. `roster.ts` 与测试
-7. `index-cache.ts` 与测试
-8. `preset.ts` 与 `base-plugins.ts` 与测试：先落共享状态与归属，再做注册、替换、清理责任
-9. `tool.ts`（含 `maxDepth` 传递与启动接受前的同来源串行区间），并用一次运行时断言确认顶层与子实例共享同一注册表状态
-10. `index.ts` 补全：配置 schema、工具注册、服务声明定型、`managedChild` 区分清理责任
-11. 重新构建、重新打包、重新安装，按验收步骤手动验证
-
-第 2、3 步提前，是因为「能不能装、装完能不能加载」属于包格式问题，晚发现会让后面所有验证都失去载体。第 1 步必须先完成 `npm install`，否则第 2 步连 `tsc` 都跑不起来；这也是审核指出的「无法保证编译成功」的直接原因。两个运行期依赖（`smol-toml`、`schemastery`）的装入验证放在第 3 步，此时 `package.json` 的 `dependencies` 已定稿。
+**实施状态**：计划 v9 为待审版本；本次仅更新计划，不代表实现完成、测试通过或允许合并。实施核心方案前须有独立正式 `Plan conclusion: APPROVED`，实施者只参照本文件，不拼接历史评论。
