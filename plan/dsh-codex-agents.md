@@ -1,12 +1,16 @@
 # dsh-codex-agents 执行计划
 
-- 版本：v6
+- 版本：v7
 - 日期：2026-10-25
 - 状态：待审核
-- 上一版：v5（提交 `a36086a`），审核意见：`schemastery` 应放 `dependencies`
+- 上一版：v6（提交 `6b1f2a8`）；本版按验收决定人要求调整全局测试角色的隔离路径，产品方案不变
 - 目标 DSH 版本：`@deepseek-ai/dsh-desktop-runtime` `0.2.1-rc.3`
 
-## v6 修改摘要
+## v7 修改摘要
+
+验收时在测试目录 `$BASE/test-home/.codex/agents/` 创建全局测试角色，测试宿主进程使用 `HOME="$BASE/test-home"`。不读写用户真实的 `~/.codex/agents/`。
+
+### 沿用 v6 的依赖决定
 
 | 项 | v5 | v6 |
 |---|---|---|
@@ -522,9 +526,9 @@ export function apply(ctx, config) {
 ## 验收步骤
 
 1. `npm install` 后跑 `npm run build` 与 `npm run typecheck` 均通过，`npm pack` 产物含 `lib/index.js`、`lib/index.d.ts`、`cordis.patch.yml`、locale 与图标
-2. 建独立 DSH_HOME 与 web 自制配置档（`dsh --profile <名> --from-default-profile web`），用 `dsh plugin --profile <名> add <安装包>` 装入，确认 `smol-toml` 与 `@deepseek-ai/schemastery` 两个运行期依赖随包装入，插件处于已激活而非报错状态
+2. 在测试目录建立独立的 `DSH_HOME` 与 `HOME`（`HOME="$BASE/test-home"`），用 web 自制配置档（`dsh --profile <名> --from-default-profile web`）及 `dsh plugin --profile <名> add <安装包>` 安装，确认 `smol-toml` 与 `@deepseek-ai/schemastery` 两个运行期依赖随包装入，插件处于已激活而非报错状态。所有测试 DSH 启动、重启均使用相同的 `HOME` 与 `DSH_HOME`
 3. 重启该配置档
-4. 在项目里放 `.codex/agents/` 测试 toml，同时在 `~/.codex/agents/` 放一个全局角色
+4. 在测试项目的 `.codex/agents/` 放项目角色，并在测试目录 `$BASE/test-home/.codex/agents/` 放全局独有角色；测试 DSH 进程使用 `HOME="$BASE/test-home"`，不接触用户真实全局角色目录
 5. 新开会话，让模型调用 `spawn_agent(task_name: "t1", agent_type: "<项目角色名>", message: "...")`
 6. 问子 agent「你的职责是什么」，确认应答出 toml 里的内容
 7. 同一会话调用全局独有角色，确认也能起子 agent
