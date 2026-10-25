@@ -167,7 +167,7 @@ for i in $(seq 1 60); do
 done
 if [ "$READY" -ne 1 ]; then
   printf '本次实例未取得本地访问地址；检查 %s\n' "$BASE/logs/boot.log" >&2
-  false
+  exit 1
 fi
 ```
 
@@ -308,7 +308,7 @@ PID="$(cat "$BASE/logs/pid")"
 CMD="$(ps -p "$PID" -o command=)" || CMD=""
 case "$CMD" in
   *dca-test*) ;;
-  *) printf '进程不属于本次 dca-test：%s\n' "$CMD" >&2; false ;;
+  *) printf '进程不属于本次 dca-test：%s\n' "$CMD" >&2; exit 1 ;;
 esac
 kill "$PID"
 STOPPED=0
@@ -318,7 +318,7 @@ for i in $(seq 1 30); do
 done
 if [ "$STOPPED" -ne 1 ]; then
   printf '本次实例尚未退出，不重启；保留记录供处理\n' >&2
-  false
+  exit 1
 fi
 ```
 
