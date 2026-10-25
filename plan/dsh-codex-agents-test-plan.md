@@ -1,11 +1,11 @@
 # dsh-codex-agents 测试计划
 
-- 版本：v10
+- 版本：v11
 - 日期：2026-10-26
 - 状态：已修订，待独立复核；未进行正式测试
 - 目标：PR #1 已确认的六条业务成功标准，以及已通过审核的 `plan/dsh-codex-agents.md` v11
 - 目标宿主参考版本：`@deepseek-ai/dsh-desktop-runtime@0.2.1-rc.3`，参考源码 `deepseek-ai/deepseek-harness@22ddee3792402c3e70ec5f86a63c3e3e895a2f60`；正式执行只记录实际版本及适用性
-- 本版调整：保留 T1—T7，目录监听主动刷新只作一次生产源码检查；全局测试角色使用专用测试账户现有的 `~/.codex/agents/`，不覆盖 `HOME`；继续受控复用已有 Desktop 模型凭证，不新增凭证申请、安装来源认证或测试用例。
+- 本版调整：保留 T1—T7；正式入口采用宿主支持的网页配置档，在当前 macOS 账户运行，`HOME` 不变；取消专用系统账户、账户间交接和桌面应用数据隔离前置。仅隔离本次 `DSH_HOME`、浏览器资料与测试工作区，复用现有模型凭据；目录监听仍只作一次生产源码检查。
 
 ## 1. 必测清单
 
@@ -25,65 +25,54 @@ T1—T7 是现有已确认目标的检查入口。T4 复用 T1，不新增启动
 
 ## 2. 正式运行环境与安装
 
-### 2.1 唯一隔离入口
+### 2.1 官方网页入口与独立运行目录
 
-本版正式运行使用 **DSH Desktop 原生应用窗口及其受管理的 `desktop` 配置档**，不使用额外浏览器，不启动 `dsh web`，不需要网页端口或浏览器配置档。Desktop 的 `desktop` 配置档由 Electron 管理，不能通过普通 `dsh --profile desktop` 启动；正式插件安装使用 Desktop 自带的 `dsh plugin --profile desktop add` 入口。
+本轮正式验证使用 DSH 官方的 `web` 配置档和浏览器界面。它沿用宿主的角色预设、工作区与子代理服务，检查对象仍是本插件的 `spawn_agent`；不把桌面应用外壳列入验收。采用此入口是为了避免桌面应用另行使用当前账户的 Electron 数据目录，**不要求专用 macOS 登录账户，不覆盖或修改 `HOME`**。
 
-**桌面端隔离条件**：在已经准备好的**专用 macOS 测试登录账户**中执行以下步骤（已有账户直接复用，一次正式尝试只新建 `BASE`）。这使 Electron 自身的应用数据、会话资料与日常登录账户分离。`DSH_HOME` 另设为本次 `BASE/home`。不准在日常账户只替换 `DSH_HOME` 就启动第二个 Desktop：宿主源码仍会使用 Electron 的用户数据目录，单独改 `DSH_HOME` 不能证明桌面界面状态已隔离。若测试账户或进入该账户的操作权限尚未准备好，本地测试工程师记录环境未就绪，暂停正式模型测试；不接入日常账户的应用数据、会话或浏览器状态。
+仅对本次 DSH 进程和插件安装命令指定独立 `DSH_HOME`，浏览器用独立临时资料目录。原有桌面应用、配置档、会话和浏览器窗口均不用于本次测试，也无需退出、重装或修改它们。可复用仍有效的隔离安装和已通过结果。
 
-在专用测试账户中进入本仓库的实际源码目录，确认它不是 `worktrees/` 或 `apm-consumers/`。本次固定以下路径并使用同一终端：
+在本仓库实际源码目录执行；不得把 `worktrees/` 或 `apm-consumers/` 当作来源仓库：
 
 ```bash
 PRODUCER="$(pwd -P)"
 SOURCE_SHA="$(git rev-parse HEAD)"
 DSH_BIN="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
-DESKTOP_APP="/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"
-test -x "$DSH_BIN" && test -x "$DESKTOP_APP"
+test -x "$DSH_BIN" || exit 1
 printf '产品提交：%s\n' "$SOURCE_SHA"
 "$DSH_BIN" --version
 
+# 在指定本轮 DSH_HOME 前记下现有受管理凭据的来源。
+SOURCE_DSH_HOME="$HOME/.dsh"
+if test -n "$DSH_HOME"; then SOURCE_DSH_HOME="$DSH_HOME"; fi
+
 umask 077
 BASE="$(mktemp -d /tmp/dca-test.XXXXXX)"
-mkdir -p "$BASE/home" "$BASE/dist" "$BASE/logs" \
+mkdir -p "$BASE/home" "$BASE/dist" "$BASE/logs" "$BASE/browser-profile" \
   "$BASE/consumer-a/.codex/agents" "$BASE/consumer-b/.codex/agents"
-PROFILE="$BASE/home/profiles/desktop"
+PROFILE="$BASE/home/profiles/web"
 printf '本次隔离目录：%s\n' "$BASE"
 ```
 
-记录实际运行版本；若与计划参考版本不同，先确认本次结果对该宿主仍适用，不因版本字符串不同就把插件判为失败。`BASE` 内的安装、工作区、会话、运行记录必须独立于源码仓库和日常用户状态。复用既有有效的正式安装或测试结论时引用原记录，不因提交号变化自动重新安装。
+记录实际宿主版本及 `BASE`。本次 Web 配置档、会话、插件安装和浏览器资料只写到 `BASE`；若宿主版本与参考版本不同，判断本次结果是否仍适用，不仅因版本号改变而重跑。
 
-### 2.2 复用桌面端凭证与模型选择
+### 2.2 复用已有模型凭据
 
-本地测试工程师从**日常 Desktop 用户已经保存**的配置准备一次受控输入：原 `DSH_HOME/.credentials.yaml` 的本机只读副本，以及当前已选择的提供方、模型和必要端点配置。副本须由有权限的人员在本机交给测试账户，保存在仅测试账户可读的路径；**不输出凭证明文、不上传仓库、不复制整个日常桌面配置档、插件树或会话**。测试账户使用下列命令安装副本；`CREDENTIAL_COPY` 的实际绝对路径由本地测试工程师在受控记录中写明：
-
-```bash
-CREDENTIAL_COPY="/实际由测试工程师准备的凭证副本绝对路径"
-test -r "$CREDENTIAL_COPY" || exit 1
-install -m 600 "$CREDENTIAL_COPY" "$BASE/home/.credentials.yaml"
-```
-
-受管理凭证文件本来就由 DSH 按 `$DSH_HOME/.credentials.yaml` 读取，测试实例从隔离 `DSH_HOME` 读取自己的副本，**不要求在启动后注入 `DEEPSEEK_API_KEY`**。该副本可能包含其他提供方记录，仅保存在本机私有 `BASE` 中，不回写来源，测试结束按第 5 节处理。若来源没有可用的已保存模型凭证，标为环境未就绪，不向产品报告业务失败。
-
-在**第一次正式业务请求之前**，本地测试工程师把日常 Desktop 当前生效的提供方／模型／必要端点设置落实到本次独立 `desktop` 配置档。若内置默认配置能够用凭证副本直接调用模型，不必迁移任何配置。其他情况由原账户的本地测试工程师读取**当前实际生效的**桌面模型配置来源，仅提取所需条目（保留原有提供方与模型，不另外更换）：
+继续使用已确定的提供方和模型，不为测试另申请账号或密钥。测试进程可直接继承现有有效的模型环境变量；需要受管理凭据时，从本机当前账户的原 `DSH_HOME` 只读复制凭据文件到本次隔离目录：
 
 ```bash
-# SOURCE_MODEL_PATCH 为原桌面配置档中实际包含模型设置的文件；
-# MODEL_ROWS_COPY 是将交给测试账户的受控临时文件，仅在原账户内运行这一步。
-SOURCE_MODEL_PATCH="/原桌面端实际模型配置文件绝对路径"
-MODEL_ROWS_COPY="/受控交接目录/model-rows.yml"
-umask 077
-yq '[.[] | select(.id == "agent-default-model" or .id == "llm-deepseek" or .id == "llm-pi-ai")]' \
-  "$SOURCE_MODEL_PATCH" > "$MODEL_ROWS_COPY"
-chmod 600 "$MODEL_ROWS_COPY"
+CREDENTIAL_SOURCE="$SOURCE_DSH_HOME/.credentials.yaml"
+if test -r "$CREDENTIAL_SOURCE"; then
+  install -m 600 "$CREDENTIAL_SOURCE" "$BASE/home/.credentials.yaml"
+fi
 ```
 
-若原配置由多份正式覆盖文件共同决定，按原有优先级核对目标模型的相关条目后再交接，不能把不相关插件、用户工作区、工具权限或会话一起复制。测试账户在第 2.4 节创建自身配置档后再载入这些条目。执行时在独立桌面端“设置 → 模型”确认生效的提供方和模型，记录选择及配置来源，不读取或打印凭证值。无法取得必要受控配置时暂停受影响项。
+仅本次 `$BASE/home/.credentials.yaml` 可由测试进程写入；不改来源文件，不打印凭据值，不复制日常会话或整个配置档。若原 Desktop 的模型选择含必要的自定义提供方、模型或端点，本地测试工程师只提取相关设置，在本轮新建的 Web 配置档中配置；默认值已能使用同一模型时不做迁移。可在测试网页的“设置 → 模型”确认最终生效配置。没有可用凭据或必要设置时，受影响项记为环境未就绪，不算插件业务失败。
 
-参考：DSH 的 [本地凭证存储说明](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/credentials/credentials-local/README.zh.md) 和 [Desktop 插件管理入口](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/apps/desktop/README.zh.md#bundled-command-runtime)。
+依据：[DSH 本地凭据说明](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/credentials/credentials-local/README.zh.md)、[官方网页入口](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/bundle/web-app/README.zh.md)。
 
 ### 2.3 创建两组测试角色
 
-甲、乙项目角色 3 份放在 `BASE` 内；全局角色 2 份放在专用测试账户的实际 `$HOME/.codex/agents/`，不另设主目录。角色名取 TOML 的 `name`，不是文件名；标记只写在角色指令中，父会话调用消息不直接告知标记。本次只新增两份测试账户角色文件，不覆盖已有文件；如测试账户已存在同名角色，先处理其冲突并保留原文件，结束后恢复。
+甲、乙项目角色放在 `BASE` 内；全局角色两份临时文件放在当前账户实际的 `$HOME/.codex/agents/`，`HOME` 保持不变。角色名取 TOML 的 `name`，不是文件名；标记只写在角色指令中，父会话调用消息不直接告知标记。仅新建本次测试拥有的文件，不覆盖或修改任何已有全局角色；如果文件名或 TOML 角色名与已有角色冲突，由本地测试工程师在正式运行前选择不冲突的测试名称并同步场景输入，不能覆盖原文件。
 
 ```bash
 cat > "$BASE/consumer-a/.codex/agents/reviewer.toml" <<'TOML'
@@ -104,10 +93,10 @@ developer_instructions = """
 TOML
 GLOBAL_AGENTS="$HOME/.codex/agents"
 mkdir -p "$GLOBAL_AGENTS"
-# 本次仅新建以下两份文件；不得覆盖测试账户已有角色文件。
+# 本次仅新建以下两份文件；不得覆盖当前账户已有角色文件。
 for file in reviewer.toml global-only.toml; do
   if test -e "$GLOBAL_AGENTS/$file"; then
-    printf "已有测试账户角色文件，先保留原文件并处理同名冲突：%s\n" "$GLOBAL_AGENTS/$file"
+    printf "已有全局角色文件，不得覆盖；先处理测试输入名称冲突：%s\n" "$GLOBAL_AGENTS/$file"
     exit 1
   fi
 done
@@ -136,55 +125,58 @@ developer_instructions = """
 TOML
 ```
 
-本次全局角色放在专用测试账户原有的 `$HOME/.codex/agents/`。保持账户原本的 `HOME`，仅为 Desktop 指定本次独立的 `DSH_HOME`。从测试项目目录启动：
+本次全局角色只在测试期间临时加入当前 `HOME` 下的角色目录；测试结束后仅删除确认由本次创建的两份文件。已有角色文件保持原状，不要求专用账户或修改 `HOME`。
 
-```bash
-cd "$BASE/consumer-a"
-DSH_HOME="$BASE/home" "$DESKTOP_APP"
-```
+### 2.4 正式打包、安装与启动
 
-专用 macOS 测试账户隔离其原有 Electron 应用数据与日常账户。首次初始化配置档后通过应用菜单完全退出 Desktop，才执行插件安装命令。
-### 2.4 正式打包、安装及启用
-
-首次打开测试 Desktop，使其在 `$BASE/home/profiles/desktop` 初始化本次配置档，然后用应用菜单**完全退出**（关闭窗口不等于退出）。以下操作仅在确认这次 Desktop 已退出后执行。若前一步准备了模型配置条目副本，先在测试账户执行：
-
-```bash
-MODEL_ROWS_COPY="/实际由测试工程师交付的 model-rows.yml 绝对路径"
-test -r "$MODEL_ROWS_COPY" && command -v yq || exit 1
-MODEL_ROWS_COPY="$MODEL_ROWS_COPY" yq -i \
-  '(. // []) += (load(strenv(MODEL_ROWS_COPY)) // [])' \
-  "$PROFILE/cordis.patch.yml"
-```
-
-未准备模型配置条目副本且内置默认配置已足够时，直接跳过该段。只向**本次新建的** `desktop` 配置档加入条目，不编辑来源文件；不允许加入同一 `id` 的第二份覆盖。
+首次准备此隔离运行目录时，从被测源码构建正式安装包，并通过宿主插件管理命令安装到本次 `web` 配置档。已有有效隔离安装直接复用，不能因提交编号变化自动重装。
 
 ```bash
 cd "$PRODUCER"
 npm install
 npm pack --pack-destination "$BASE/dist"
 PKG="$(find "$BASE/dist" -maxdepth 1 -name 'dsh-codex-agents-*.tgz' -type f -print -quit)"
-test -n "$PKG" && test -s "$PKG"
+test -n "$PKG" && test -s "$PKG" || exit 1
 
-DSH_HOME="$BASE/home" \
-  "$DSH_BIN" plugin --profile desktop add "$PKG"
-test -f "$PROFILE/cordis.patch.yml"
+DSH_HOME="$BASE/home" "$DSH_BIN" plugin --profile web add "$PKG"
+test -f "$PROFILE/cordis.patch.yml" || exit 1
 ```
 
-`npm pack` 按产品声明的 `prepack` 构建正式发布产物；本轮不重复要求运行 `npm run typecheck`、DSH 源码单元测试或宿主内部集成测试。若发布包没有可加载入口，交产品实现者修复生产包，不手改已安装消费者。
+`npm pack` 按产品 `prepack` 生成可安装产物；若正式包无法加载，交产品实现者修复，不手改消费者。本轮不另加类型检查或宿主源码测试作为通过条件。
 
-T6 需要允许父代理 → 子代理 → 孙代理一次合法委派，在本次配置档中使用宿主支持的 `maxDepth: 2`。本地测试工程师若尚未设置，可在测试配置档增加如下单条覆盖（同 `id` 已有覆盖时合并该条，不重复增加）：
+T6 的合法调用链需要允许两次委派（父代理 → 子代理 → 孙代理）。在**本次独立** `$PROFILE/cordis.patch.yml` 中设置 `subagent` 行的 `maxDepth=2`，不编辑用户现有配置。已存在该行时仅改此字段，其余配置保持不变：
 
 ```bash
-# 在本次新建配置档尚无 subagent 覆盖行时执行一次；
-# 通过 YAML 结构追加，避免把条目直接拼接到可能是 [] 的空列表之后。
-test "$(yq '[.[] | select(.id == "subagent")] | length' "$PROFILE/cordis.patch.yml")" = 0 || exit 1
-yq -i '(. // []) += [{"id": "subagent", "config": {"maxDepth": 2}}]' \
-  "$PROFILE/cordis.patch.yml"
+PATCH="$PROFILE/cordis.patch.yml"
+if test "$(yq '[.[] | select(.id == "subagent")] | length' "$PATCH")" = 0; then
+  yq -i '(. // []) += [{"id": "subagent", "config": {"maxDepth": 2}}]' "$PATCH"
+else
+  yq -i '(.[] | select(.id == "subagent") | .config.maxDepth) = 2' "$PATCH"
+fi
 ```
 
-该设置仅用于使 **T6 的合法业务路径能够运行**。保留已有宿主其它必需配置，不改变插件的工具、代理角色或委派实现；记录本次实际生效值。无需再改回 1、重启做宿主上限拒绝试验，也无需额外验证宿主 `SubagentDepthError`。
+记录实际生效的设置。无需额外切换成 1 来测试宿主已经实现的拦截器，也不重新验证其异常类型。
 
-完成凭证及模型配置后，用第 2.3 节命令重新打开隔离 Desktop。通过应用自带的“添加工作区”依次登记 `$BASE/consumer-a`、`$BASE/consumer-b`，分别创建会话；只需看工作区是否出现在当前界面，不默认另读宿主 `workspace.json`。先发送一条简短正常消息确认所选模型可用，作为必要环境预检；不把这条回复列入 T1—T7 的通过结果。模型或桌面启动故障记录为“无法判断”，不冒充插件失败。
+从甲项目目录启动正式 Web 运行时，保持该终端中的进程运行，直到测试结束：
+
+```bash
+cd "$BASE/consumer-a"
+DSH_HOME="$BASE/home" "$DSH_BIN" web --no-open --host 127.0.0.1 --port 0
+```
+
+`--port 0` 让系统分配空闲端口；启动时终端打印一条 `dsh web:` 地址。该地址包含进程访问凭据，只在本机使用，不写入公开记录。在另一个终端使用现有浏览器的**独立临时资料目录**打开完整地址；例如已安装 Chrome 的 macOS：
+
+```bash
+BASE="/上一步输出的本次隔离目录"
+WEB_URL="从本次服务终端复制的完整 dsh web 地址"
+open -na "Google Chrome" --args --user-data-dir="$BASE/browser-profile" --new-window "$WEB_URL"
+```
+
+如使用其他已安装的 Chromium 浏览器，采用其等效的独立资料目录启动参数。不得复用日常浏览器资料或会话。不需要启动 Desktop，也不需要专用 macOS 用户。
+
+在测试网页中使用“添加工作区”登记 `$BASE/consumer-a`、`$BASE/consumer-b` 并分别创建会话。确认当前提供方、模型与必要端点配置正确；如果默认值不能使用已保存凭据，在**本次 Web 设置页**配置原本已确定的模型，不更换测试目标模型。发送一条简短正常消息确认模型可用，作为环境预检，不计入 T1—T7 通过结果。网页或模型环境故障记为“无法判断”，不能当成插件业务失败。
+
+依据：[官方网页运行参数与会话](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/bundle/web-app/README.zh.md)、[CLI 配置档及插件安装说明](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/apps/cli/README.zh.md)。
 
 ## 3. 执行 T1—T7
 
@@ -198,9 +190,9 @@ yq -i '(. // []) += [{"id": "subagent", "config": {"maxDepth": 2}}]' \
 
 **T5/T7（共享一次静态检查）**：读取本次被测产品的 `src/watch.ts`、`src/manager.ts` 相关代码，确认顶层用 `node:fs.watch` 监听角色目录，收到 `change`／`rename` 后会安排异步读取并刷新对应角色预设。只检查该产品路径，不验证操作系统监听服务、不运行额外监听试验，也不采集事件轨迹。
 
-**T5**：保持桌面进程与甲会话不重启，将 `$BASE/consumer-a/.codex/agents/reviewer.toml` 内的 `MARKER_OLD` 改为不互相包含的 `MARKER_NEW`，立即按 T1 调用（`task_name=t5`）。本次新子代理必须报告 `MARKER_NEW`，不能继续使用 `MARKER_OLD`。只判断实际新角色指令，**不追加预设 ID 格式或内部代际检查**。
+**T5**：保持本次网页服务进程与甲会话不重启，将 `$BASE/consumer-a/.codex/agents/reviewer.toml` 内的 `MARKER_OLD` 改为不互相包含的 `MARKER_NEW`，立即按 T1 调用（`task_name=t5`）。本次新子代理必须报告 `MARKER_NEW`，不能继续使用 `MARKER_OLD`。只判断实际新角色指令，**不追加预设 ID 格式或内部代际检查**。
 
-**T7**：仍在同一甲会话、同一桌面进程中，新建 `$BASE/consumer-a/.codex/agents/extra.toml`：
+**T7**：仍在同一甲会话、同一网页服务进程中，新建 `$BASE/consumer-a/.codex/agents/extra.toml`：
 
 ```toml
 name = "extra"
@@ -215,14 +207,14 @@ developer_instructions = """
 
 **T6（最后做）**：确认本次隔离宿主配置允许 `maxDepth=2`。在甲父会话调用 `spawn_agent(task_name="t6-outer", agent_type="reviewer", message="请实际调用 spawn_agent，task_name=t6-inner，agent_type=reviewer，message=请介绍职责；然后报告这次工具调用的实际结果")`。检查第一层子代理**真实调用** `spawn_agent`，实际启动下一层子代理，不以它口头说“已委派”作为证据。针对“遵守宿主现行上限”的插件责任，在被测产品 `src/tool.ts` 的委派处确认它每次从 `ctx.subagents.resolveMaxDepth()` 获取现行值并送入 `startActivation` 请求。此处不另测宿主上限 1 的拦截实现。如果第一层模型没有实际发出工具调用，记录“无法判断”，不临场变换提示、模型或配置追求通过。
 
-上述所有业务结果优先直接采用 Desktop 当前工具卡片与子代理会话内容。仅当显示信息不足以判断某项时，再按现成会话记录定位与该项相关的内容；不默认读取 `session.v4.jsonl.zstd`、枚举所有 `request/header`、重建调用链或添加采集程序。
+上述所有业务结果优先直接采用 网页界面当前工具卡片与子代理会话内容。仅当显示信息不足以判断某项时，再按现成会话记录定位与该项相关的内容；不默认读取 `session.v4.jsonl.zstd`、枚举所有 `request/header`、重建调用链或添加采集程序。
 
 ## 4. 重试、停止与记录
 
 - 外部可重试故障限模型请求超时、临时下载错误和非产品原因的独立测试进程故障：**同输入、配置、模型及版本最多两次正式尝试**。先记录第一次结果并确认不会重复造成业务副作用；已确定的业务失败不得通过重试抹掉。
-- 插件业务失败（选错角色、未知角色回退、文件变化后仍使用旧指令、无法合法再委派）保留实际失败，交产品实现者。模型凭证不可用、无合法测试桌面隔离条件或缺少可观察结果记录“无法判断／未执行”，只暂停受影响项。
+- 插件业务失败（选错角色、未知角色回退、文件变化后仍使用旧指令、无法合法再委派）保留实际失败，交产品实现者。模型凭证不可用、独立网页配置档无法启动或缺少可观察结果时记录“无法判断／未执行”，只暂停受影响项。
 - 如产品或步骤修订，只复核受影响项目；有效旧通过结果引用已有记录，不因提交号改变重跑。
-- 测试结束通过**退出本次专用 Desktop**停止测试运行，不停止或重启任何日常用户应用／服务。退出后删除本次在专用测试账户 `$HOME/.codex/agents/` 新建的 `reviewer.toml`、`global-only.toml`（第 2.3 节已确认没有覆盖旧文件），保留其余已有角色；原始结果、必要运行配置及凭证副本保存在 `BASE` 下受控位置，直到复核完成；随后仅删除本次 `BASE`。不提交凭证、会话原文或临时文件到 Git。
+- 测试结束向本次 `web` 服务终端发送中断信号，关闭本次临时浏览器窗口；不停止或重启任何日常应用／服务。只删除第 2.3 节确认由本次创建的 `$HOME/.codex/agents/reviewer.toml`、`global-only.toml`，不得删除或覆盖其它角色。结果、必要配置与凭据副本暂保留在 `BASE` 供复核，完成后只清理本次 `BASE`。不提交凭据、会话原文或临时文件到 Git。
 
 | 编号 | 结果（通过／业务失败／无法判断／未执行） | 实际输入与观察到的结果 | 记录位置或复用来源 |
 |---|---|---|---|
@@ -234,6 +226,6 @@ developer_instructions = """
 | T6 | 未执行 | — | — |
 | T7 | 未执行 | — | — |
 
-执行记录同时写明产品提交 `SOURCE_SHA`、正式包路径、实际 Desktop/DSH 版本、隔离账户与 `BASE`、生效提供方／模型及必要的配置覆盖、正式尝试与失败原因。配置和输出只保存检查这些业务目标所需的部分。
+执行记录同时写明产品提交 `SOURCE_SHA`、正式包路径、实际 DSH 网页运行时版本、隔离的 `DSH_HOME` 与 `BASE`、生效提供方／模型及必要的配置覆盖、正式尝试与失败原因。配置和输出只保存检查这些业务目标所需的部分。
 
-**交接**：本文件是 v10 完整待审候选，未由编写者自行批准第一、第二关口。由独立测试计划审核者核对上述目标覆盖和可执行性，随后本地测试工程师在已隔离的 Desktop 环境准备及接线，执行工程师运行并记录正式结果。没有独立子代理复核，不将本次自查写为独立批准。
+**交接**：本文件是 v11 完整待审候选，未由编写者自行批准第一、第二关口。由独立测试计划审核者核对上述目标覆盖和可执行性，随后本地测试工程师在已隔离的网页配置档准备及接线，执行工程师运行并记录正式结果。没有独立子代理复核，不将本次自查写为独立批准。
