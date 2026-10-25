@@ -41,12 +41,13 @@ BASE="$(mktemp -d /tmp/dca-test.XXXXXX)"
 mkdir -p "$BASE"/{home,dist,logs,browser-profile,consumer-a/.codex/agents,consumer-b/.codex/agents}
 PROFILE="$BASE/home/profiles/web"
 
+# 值一律加引号，路径含空格时 source 才不会断词
 cat > "$BASE/logs/paths.env" <<ENV
-BASE=$BASE
-PRODUCER=$PRODUCER
-SOURCE_SHA=$SOURCE_SHA
-PROFILE=$PROFILE
-SOURCE_DSH_HOME=$SOURCE_DSH_HOME
+BASE="$BASE"
+PRODUCER="$PRODUCER"
+SOURCE_SHA="$SOURCE_SHA"
+PROFILE="$PROFILE"
+SOURCE_DSH_HOME="$SOURCE_DSH_HOME"
 ENV
 note "隔离目录：${BASE}"
 note "产品提交：${SOURCE_SHA}"
@@ -91,11 +92,24 @@ TOML
 note "写入全局角色到 ${HOME}/.codex/agents（仅新建，不覆盖）"
 GLOBAL_AGENTS="$HOME/.codex/agents"
 mkdir -p "$GLOBAL_AGENTS"
+
+# 计划第 2.3 节要求：文件名或 TOML 角色名与已有角色冲突都要在正式运行前处理。
+# 文件名冲突会直接覆盖，角色名冲突会让 T2、T3 的场景输入失真，两者都拦下。
 for file in reviewer.toml global-only.toml; do
   if test -e "$GLOBAL_AGENTS/$file"; then
     fail "已存在 ${GLOBAL_AGENTS}/${file}，不得覆盖。请先选择不冲突的测试名称并同步场景输入"
   fi
 done
+for name in reviewer global_only; do
+  for existing in "$GLOBAL_AGENTS"/*.toml; do
+    test -e "$existing" || continue
+    got="$(yq -p toml -oy '.name // ""' "$existing" 2>/dev/null || true)"
+    if [ "$got" = "$name" ]; then
+      fail "已有角色 ${existing} 的 name 也是 ${name}，会让 T2、T3 场景失真。请改名后重跑"
+    fi
+  done
+done
+note "全局角色文件名与角色名均无冲突"
 cat > "$GLOBAL_AGENTS/reviewer.toml" <<'TOML'
 name = "reviewer"
 description = "全局同名角色"
@@ -112,7 +126,7 @@ developer_instructions = """
 被问到职责时，请报告自己的识别标记。
 """
 TOML
-printf 'GLOBAL_AGENTS=%s\n' "$GLOBAL_AGENTS" >> "$BASE/logs/paths.env"
+printf 'GLOBAL_AGENTS="%s"\n' "$GLOBAL_AGENTS" >> "$BASE/logs/paths.env"
 
 # ---------- 2.4 打包、安装 ----------
 note "构建与打包"
@@ -120,7 +134,7 @@ npm install --silent > "$BASE/logs/npm-install.log" 2>&1 || fail "npm install �
 npm pack --pack-destination "$BASE/dist" > "$BASE/logs/npm-pack.log" 2>&1 || fail "npm pack 失败，见 ${BASE}/logs/npm-pack.log"
 PKG="$(find "$BASE/dist" -maxdepth 1 -name 'dsh-codex-agents-*.tgz' -type f -print -quit)"
 test -n "$PKG" && test -s "$PKG" || fail "没有生成安装包"
-printf 'PKG=%s\n' "$PKG" >> "$BASE/logs/paths.env"
+printf 'PKG="%s"\n' "$PKG" >> "$BASE/logs/paths.env"
 
 note "安装到本次 web 配置档"
 DSH_HOME="$BASE/home" "$DSH_BIN" plugin --profile web add "$PKG" \

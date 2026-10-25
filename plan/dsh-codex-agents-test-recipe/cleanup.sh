@@ -24,13 +24,26 @@ test -f "$BASE/logs/paths.env" || { printf '缺少 %s，无法确认清理范围
 
 note "清理：${BASE}"
 
-# 先停止本次 web 服务，只停自己记录的进程号
+# 先停止本次 web 服务。只停自己记录的进程号，且确认命令行确实是 dsh web，
+# 避免进程号被系统回收后误杀无关进程。
 if [ -f "$BASE/logs/web.pid" ]; then
   WPID="$(cat "$BASE/logs/web.pid")"
   if kill -0 "$WPID" 2>/dev/null; then
-    kill "$WPID" 2>/dev/null || true
-    note "已停止本次 web 服务（PID ${WPID}）"
+    if ps -p "$WPID" -o command= 2>/dev/null | grep -q 'dsh web'; then
+      kill "$WPID" 2>/dev/null || true
+      note "已停止本次 web 服务（PID ${WPID}）"
+    else
+      note "PID ${WPID} 已不是本次 web 服务，跳过，不误停其它进程"
+    fi
   fi
+fi
+
+# 计划第 4 节要求关闭本次临时浏览器窗口。资料目录被占用时 $BASE 删不干净，
+# 因此这里先检查，未关闭就提示并停止，不擅自结束用户的浏览器进程。
+if pgrep -f "user-data-dir=${BASE}/browser-profile" >/dev/null 2>&1; then
+  printf '错误：本次临时浏览器窗口仍在运行，占用 %s/browser-profile。\n' "$BASE" >&2
+  printf '请先关闭该 Chrome 窗口（不是日常窗口），再重新执行本脚本。\n' >&2
+  exit 1
 fi
 
 # 只删本次新建的两份全局角色

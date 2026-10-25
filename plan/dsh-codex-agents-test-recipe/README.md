@@ -22,30 +22,46 @@
 |---|---|---|
 | `prepare.sh` | 2.1—2.4 | 建隔离目录、复制凭据、写角色、打包安装、设 `maxDepth=2` |
 | `start.sh` | 2.4 | 启动 web 服务，用隔离资料目录打开 Chrome |
-| `static-check.sh` | 3 节 T4、T5/T7、T6 | 三处源码检查 |
+| `static-check.sh` | 3 节 T4、T5/T7、T6 | 打印计划原句与相关代码位置，供人工判断 |
 | `cleanup.sh` | 4 节 | 停本次服务、删本次创建的两份全局角色与 `BASE` |
 
-`static-check.sh` 只读产品源码，不运行产品，可在 `prepare.sh` 之后任意时刻执行。
+`static-check.sh` 不做通过/失败判定，只把计划要求核对的原句和相关代码段摆出来。三项是否成立，按计划第 3 节原文由执行工程师判断并记录。它只读产品源码，不运行产品。
 
 ## 执行顺序
 
 ```bash
-# 1. 准备
+# 1. 准备（建议显式传 BASE 避免多轮混淆；不传则取 /tmp/dca-test.* 最新一个）
 bash plan/dsh-codex-agents-test-recipe/prepare.sh
 # 记下输出的 BASE，后面都用它
 
-# 2. 源码检查（T4、T5/T7 共享、T6 的插件侧责任）
+# 2. 打印源码检查材料（T4、T5/T7 共享、T6 的插件侧责任）
 bash plan/dsh-codex-agents-test-recipe/static-check.sh
 
 # 3. 启动服务并打开隔离浏览器
 bash plan/dsh-codex-agents-test-recipe/start.sh
 
-# 4. 在网页里登记工作区、建会话、确认模型可用，然后按第 3 节执行 T1—T7
+# 4. 在网页里完成下列准备，再按第 3 节执行 T1—T7
+#    a. 「添加工作区」登记 $BASE/consumer-a 与 $BASE/consumer-b
+#    b. 两个工作区各建一个会话
+#    c. 发一条简短消息确认模型可用（环境预检，不计入 T1—T7）
+#    d. 默认模型用不了已复制凭据时，按下方「模型配置」处理
 #    T6 最后做；T5 必须在同一会话、不重启的前提下改文件后立即调用
 
-# 5. 收尾
+# 5. 关闭本次 Chrome 窗口，然后收尾
 bash plan/dsh-codex-agents-test-recipe/cleanup.sh
 ```
+
+## 模型配置
+
+默认值若能直接使用已复制的凭据，不需要迁移任何设置，在网页「设置 → 模型」确认最终生效配置即可。
+
+默认值用不了时（例如原桌面配置用了自定义提供方或端点），按计划第 2.2 节，从 `$SOURCE_DSH_HOME/profiles/desktop/cordis.patch.yml` 只提取所需的提供方、模型与端点条目，写进 `$BASE/home/profiles/web/cordis.patch.yml`，重启服务。不更换测试目标模型。
+
+仍不可用时，受影响项记「无法判断」，不算插件业务失败。
+
+## 收尾要求
+
+计划第 4 节要求关闭本次临时浏览器窗口后再清理。`cleanup.sh` 会先检查 `$BASE/browser-profile` 是否仍被占用，被占用就报错退出，不会擅自结束浏览器进程，也不会留下删不干净的 `$BASE`。
 
 `BASE` 从 `prepare.sh` 输出读取，或取 `/tmp/dca-test.*` 最新一个。
 
@@ -70,13 +86,15 @@ bash plan/dsh-codex-agents-test-recipe/cleanup.sh
 | `prepare.sh` | 从零跑通：打包、安装到 web 配置档、`maxDepth` 写入为 2 |
 | 插件安装 | `--dump-config` 中出现 `dsh-codex-agents` 三处 |
 | `start.sh` | 服务打印地址、写入 `web.url`、Chrome 以 `$BASE/browser-profile` 打开 |
-| `static-check.sh` | 三处全部通过：`apply` 启动路径无 `await` 与同步读文件；`watch.ts` 用 `node:fs.watch` 并安排异步刷新；`tool.ts` 调用 `resolveMaxDepth()` 并送入 `startActivation` |
+| `static-check.sh` | 能打印三处检查所需的计划原句与代码位置 |
 
 T1—T7 的业务结果尚未正式执行，按计划第 4 节表格由本地执行工程师记录。
 
 ## 已知限制
 
-- 全局角色写在当前账户的 `$HOME/.codex/agents/`。`prepare.sh` 遇到同名文件直接失败，不覆盖；需要先改名再重跑。
+- 全局角色写在当前账户的 `$HOME/.codex/agents/`。`prepare.sh` 同时检查文件名与 TOML 里的 `name`，任一冲突就失败，不覆盖；需先改名再重跑。角色名冲突会让 T2、T3 的场景输入失真，不能只改文件名绕过。
+- 多轮测试会留下多个 `/tmp/dca-test.*`。不传 `BASE` 时取最新一个，建议每次都显式传 `BASE=`。
 - 会话目录名由工作区绝对路径转义而来，路径含空格时需另行处理。
-- `start.sh` 前台等待服务进程；结束用 Ctrl-C 或 `kill "$(cat $BASE/logs/web.pid)"`。
+- `start.sh` 前台等待服务进程；结束用 Ctrl-C 或 `kill "$(cat $BASE/logs/web.pid)"`，并关闭本次 Chrome 窗口。
+- `cleanup.sh` 只在确认命令行是 `dsh web` 时才结束进程，避免进程号被回收后误杀无关进程。
 - 本次 `maxDepth=2` 只写在 `$BASE/home/profiles/web/cordis.patch.yml`，不影响用户现有配置。

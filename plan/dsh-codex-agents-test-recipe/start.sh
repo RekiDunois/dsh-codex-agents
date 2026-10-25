@@ -72,8 +72,15 @@ cat <<TXT
   2. 分别在两个工作区建会话
   3. 发一条简短消息确认模型可用（不计入 T1—T7）
 
+模型配置：默认值若能直接使用已复制的凭据，不需要迁移任何设置。
+若默认值用不了（例如原桌面配置用了自定义提供方或端点），按计划第 2.2 节，
+从 ${SOURCE_DSH_HOME}/profiles/desktop/cordis.patch.yml 只提取所需的提供方、
+模型与端点条目，写进本次配置档 ${PROFILE}/cordis.patch.yml，然后重启本服务。
+不更换测试目标模型。仍不可用时，受影响项记「无法判断」，不算插件业务失败。
+
 结束后 Ctrl-C 或：
   kill "\$(cat ${BASE}/logs/web.pid)"
+请同时关闭本次打开的 Chrome 窗口，否则 cleanup.sh 会拒绝删除 BASE。
 
 TXT
 
