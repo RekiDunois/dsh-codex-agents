@@ -1,11 +1,11 @@
 # dsh-codex-agents 测试计划
 
-- 版本：v9
+- 版本：v10
 - 日期：2026-10-26
 - 状态：已修订，待独立复核；未进行正式测试
 - 目标：PR #1 已确认的六条业务成功标准，以及已通过审核的 `plan/dsh-codex-agents.md` v11
 - 目标宿主参考版本：`@deepseek-ai/dsh-desktop-runtime@0.2.1-rc.3`，参考源码 `deepseek-ai/deepseek-harness@22ddee3792402c3e70ec5f86a63c3e3e895a2f60`；正式执行只记录实际版本及适用性
-- 本版调整：通过隔离的 DSH Desktop 正式插件安装与原生界面运行；复用桌面端已保存凭证的独立副本；删除独立浏览器、网页服务端口检查、宿主递归拦截双配置试验、预设 ID 格式检查和重复的内部会话取证。未增加业务测试。
+- 本版调整：保留 T1—T7，目录监听主动刷新只作一次生产源码检查；全局测试角色使用专用测试账户现有的 `~/.codex/agents/`，不覆盖 `HOME`；继续受控复用已有 Desktop 模型凭证，不新增凭证申请、安装来源认证或测试用例。
 
 ## 1. 必测清单
 
@@ -17,11 +17,11 @@
 | T2 | 2 | 甲、乙和全局都有同名 `reviewer` | 甲选甲、乙选乙，均不选全局同名角色 | 复用 T1 的甲结果，与乙结果比较 |
 | T3 | 2、3 | 甲调用全局独有 `global_only`，再调用未知 `nobody`；乙有独有 `beta_only` | 全局独有角色可用；未知角色报错且列出甲可见角色，不列出乙独有角色、不启动未知子代理 | 两次工具结果；成功子代理答复 |
 | T4 | 4 | 查看本插件顶层加载路径并复用 T1 首次委派 | 插件入口不等待角色目录扫描或预设预注册完成；首次会话可调用 `spawn_agent` | 一次生产源码检查与 T1 结果 |
-| T5 | 5 | 不重启，把甲 `reviewer` 指令从 `MARKER_OLD` 改为 `MARKER_NEW` 后立即再次调用 | 新子代理使用新指令 | 新旧两次子代理答复，必要时核对现成系统提示 |
+| T5 | 5 | 不重启，把甲 `reviewer` 指令从 `MARKER_OLD` 改为 `MARKER_NEW` 后立即再次调用 | 新子代理使用新指令 | 新旧两次子代理答复；与 T7 共用一次目录监听到异步刷新路径的源码检查 |
 | T6 | 6 | 在宿主允许两层委派的隔离配置下，由子代理再次调用 `spawn_agent` | 第一层子代理实际调用同一工具并成功启动下一层；插件使用宿主当前的 `maxDepth` | 两层实际工具结果；检查插件委派处读取并传递 `resolveMaxDepth()` 的代码 |
 | T7 | 5 | 在甲新增再删除 `extra.toml`，每次变化后立即调用 | 新增后可启动，删除后报未知角色且不再列出 `extra`，全程无需重启 | 两次工具结果，新增角色的答复 |
 
-T1—T7 是现有已确认目标的检查入口。T4 复用 T1，不新增启动试验；T6 只运行一次允许再委派的场景，不用另一组配置重新证明宿主拦截行为。T5、T7 直接检查角色文件变化带来的业务结果，不要求强制丢失监听事件、读取监听器状态或建立追踪程序。
+T1—T7 是现有已确认目标的检查入口。T4 复用 T1，不新增启动试验；T6 只运行一次允许再委派的场景，不用另一组配置重新证明宿主拦截行为。T5、T7 直接检查文件变化后的业务结果，并共用一次生产源码检查确认目录事件确实安排异步刷新；不额外运行监听试验，不要求强制丢失监听事件、读取监听器状态或建立追踪程序。
 
 ## 2. 正式运行环境与安装
 
@@ -83,7 +83,7 @@ chmod 600 "$MODEL_ROWS_COPY"
 
 ### 2.3 创建两组测试角色
 
-以下五个输入文件均在 `BASE` 内。角色名取 TOML 的 `name`，不是文件名；标记只写在角色指令中，父会话调用消息不直接告知标记。
+甲、乙项目角色 3 份放在 `BASE` 内；全局角色 2 份放在专用测试账户的实际 `$HOME/.codex/agents/`，不另设主目录。角色名取 TOML 的 `name`，不是文件名；标记只写在角色指令中，父会话调用消息不直接告知标记。本次只新增两份测试账户角色文件，不覆盖已有文件；如测试账户已存在同名角色，先处理其冲突并保留原文件，结束后恢复。
 
 ```bash
 cat > "$BASE/consumer-a/.codex/agents/reviewer.toml" <<'TOML'
@@ -102,8 +102,16 @@ developer_instructions = """
 被问到职责时，请报告自己的识别标记。
 """
 TOML
-mkdir -p "$BASE/test-home/.codex/agents"
-cat > "$BASE/test-home/.codex/agents/reviewer.toml" <<'TOML'
+GLOBAL_AGENTS="$HOME/.codex/agents"
+mkdir -p "$GLOBAL_AGENTS"
+# 本次仅新建以下两份文件；不得覆盖测试账户已有角色文件。
+for file in reviewer.toml global-only.toml; do
+  if test -e "$GLOBAL_AGENTS/$file"; then
+    printf "已有测试账户角色文件，先保留原文件并处理同名冲突：%s\n" "$GLOBAL_AGENTS/$file"
+    exit 1
+  fi
+done
+cat > "$GLOBAL_AGENTS/reviewer.toml" <<'TOML'
 name = "reviewer"
 description = "全局同名角色"
 developer_instructions = """
@@ -111,7 +119,7 @@ developer_instructions = """
 被问到职责时，请报告自己的识别标记。
 """
 TOML
-cat > "$BASE/test-home/.codex/agents/global-only.toml" <<'TOML'
+cat > "$GLOBAL_AGENTS/global-only.toml" <<'TOML'
 name = "global_only"
 description = "仅全局可用"
 developer_instructions = """
@@ -128,18 +136,14 @@ developer_instructions = """
 TOML
 ```
 
-测试用全局角色必须在 Desktop 启动时可见的 `HOME/.codex/agents` 下。本版在专用测试登录账户中将 `HOME` 指向一次性 `$BASE/test-home`，因此须在**关闭 Desktop 后**从同一终端用以下环境启动测试应用：
+本次全局角色放在专用测试账户原有的 `$HOME/.codex/agents/`。保持账户原本的 `HOME`，仅为 Desktop 指定本次独立的 `DSH_HOME`。从测试项目目录启动：
 
 ```bash
-mkdir -p "$BASE/test-home/Library"
-# 保留已有应用安装和运行时，切换的只是本次受控用户主目录与 DSH_HOME。
-# 不用 open -a：该方式不保证把这两个变量传给新应用进程。
 cd "$BASE/consumer-a"
-HOME="$BASE/test-home" DSH_HOME="$BASE/home" "$DESKTOP_APP"
+DSH_HOME="$BASE/home" "$DESKTOP_APP"
 ```
 
-专用 macOS 账户保证 Electron 用户数据与日常账户相隔离。**上述 `HOME` 覆盖只用于让产品按正式全局角色路径读取测试 TOML；不得以它单独声称 Electron 用户数据也受到隔离。** 桌面端退出后才能执行 `desktop` 插件包操作。
-
+专用 macOS 测试账户隔离其原有 Electron 应用数据与日常账户。首次初始化配置档后通过应用菜单完全退出 Desktop，才执行插件安装命令。
 ### 2.4 正式打包、安装及启用
 
 首次打开测试 Desktop，使其在 `$BASE/home/profiles/desktop` 初始化本次配置档，然后用应用菜单**完全退出**（关闭窗口不等于退出）。以下操作仅在确认这次 Desktop 已退出后执行。若前一步准备了模型配置条目副本，先在测试账户执行：
@@ -161,7 +165,7 @@ npm pack --pack-destination "$BASE/dist"
 PKG="$(find "$BASE/dist" -maxdepth 1 -name 'dsh-codex-agents-*.tgz' -type f -print -quit)"
 test -n "$PKG" && test -s "$PKG"
 
-HOME="$BASE/test-home" DSH_HOME="$BASE/home" \
+DSH_HOME="$BASE/home" \
   "$DSH_BIN" plugin --profile desktop add "$PKG"
 test -f "$PROFILE/cordis.patch.yml"
 ```
@@ -192,6 +196,8 @@ yq -i '(. // []) += [{"id": "subagent", "config": {"maxDepth": 2}}]' \
 
 **T3**：在甲先调用 `spawn_agent(task_name="t3a", agent_type="global_only", message="请介绍职责并报告自己的角色标记")`，应成功，子代理答复 `MARKER_GLOBAL`；再调用 `spawn_agent(task_name="t3b", agent_type="nobody", message="请介绍职责")`，应明确返回未知角色错误，列出甲可用的 `reviewer`、`global_only`，不列出乙独有的 `beta_only`，不启动 `nobody` 子代理。不要求错误包含角色文件路径或固定完整句式。
 
+**T5/T7（共享一次静态检查）**：读取本次被测产品的 `src/watch.ts`、`src/manager.ts` 相关代码，确认顶层用 `node:fs.watch` 监听角色目录，收到 `change`／`rename` 后会安排异步读取并刷新对应角色预设。只检查该产品路径，不验证操作系统监听服务、不运行额外监听试验，也不采集事件轨迹。
+
 **T5**：保持桌面进程与甲会话不重启，将 `$BASE/consumer-a/.codex/agents/reviewer.toml` 内的 `MARKER_OLD` 改为不互相包含的 `MARKER_NEW`，立即按 T1 调用（`task_name=t5`）。本次新子代理必须报告 `MARKER_NEW`，不能继续使用 `MARKER_OLD`。只判断实际新角色指令，**不追加预设 ID 格式或内部代际检查**。
 
 **T7**：仍在同一甲会话、同一桌面进程中，新建 `$BASE/consumer-a/.codex/agents/extra.toml`：
@@ -216,7 +222,7 @@ developer_instructions = """
 - 外部可重试故障限模型请求超时、临时下载错误和非产品原因的独立测试进程故障：**同输入、配置、模型及版本最多两次正式尝试**。先记录第一次结果并确认不会重复造成业务副作用；已确定的业务失败不得通过重试抹掉。
 - 插件业务失败（选错角色、未知角色回退、文件变化后仍使用旧指令、无法合法再委派）保留实际失败，交产品实现者。模型凭证不可用、无合法测试桌面隔离条件或缺少可观察结果记录“无法判断／未执行”，只暂停受影响项。
 - 如产品或步骤修订，只复核受影响项目；有效旧通过结果引用已有记录，不因提交号改变重跑。
-- 测试结束通过**退出本次专用 Desktop**停止测试运行，不停止或重启任何日常用户应用／服务。原始结果、必要运行配置及凭证副本保存在 `BASE` 下受控位置，直到复核完成；随后仅删除本次 `BASE`。不提交凭证、会话原文或临时文件到 Git。
+- 测试结束通过**退出本次专用 Desktop**停止测试运行，不停止或重启任何日常用户应用／服务。退出后删除本次在专用测试账户 `$HOME/.codex/agents/` 新建的 `reviewer.toml`、`global-only.toml`（第 2.3 节已确认没有覆盖旧文件），保留其余已有角色；原始结果、必要运行配置及凭证副本保存在 `BASE` 下受控位置，直到复核完成；随后仅删除本次 `BASE`。不提交凭证、会话原文或临时文件到 Git。
 
 | 编号 | 结果（通过／业务失败／无法判断／未执行） | 实际输入与观察到的结果 | 记录位置或复用来源 |
 |---|---|---|---|
@@ -230,4 +236,4 @@ developer_instructions = """
 
 执行记录同时写明产品提交 `SOURCE_SHA`、正式包路径、实际 Desktop/DSH 版本、隔离账户与 `BASE`、生效提供方／模型及必要的配置覆盖、正式尝试与失败原因。配置和输出只保存检查这些业务目标所需的部分。
 
-**交接**：本文件是 v9 完整待审候选，未由编写者自行批准第一、第二关口。由独立测试计划审核者核对上述目标覆盖和可执行性，随后本地测试工程师在已隔离的 Desktop 环境准备及接线，执行工程师运行并记录正式结果。没有独立子代理复核，不将本次自查写为独立批准。
+**交接**：本文件是 v10 完整待审候选，未由编写者自行批准第一、第二关口。由独立测试计划审核者核对上述目标覆盖和可执行性，随后本地测试工程师在已隔离的 Desktop 环境准备及接线，执行工程师运行并记录正式结果。没有独立子代理复核，不将本次自查写为独立批准。
