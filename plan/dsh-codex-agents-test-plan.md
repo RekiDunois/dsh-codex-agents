@@ -66,7 +66,7 @@ if test -r "$CREDENTIAL_SOURCE"; then
 fi
 ```
 
-仅本次 `$BASE/home/.credentials.yaml` 可由测试进程写入；不改来源文件，不打印凭据值，不复制日常会话或整个配置档。若原 Desktop 的模型选择含必要的自定义提供方、模型或端点，本地测试工程师只提取相关设置，在本轮新建的 Web 配置档中配置；默认值已能使用同一模型时不做迁移。可在测试网页的“设置 → 模型”确认最终生效配置。没有可用凭据或必要设置时，受影响项记为环境未就绪，不算插件业务失败。
+仅本次 `$BASE/home/.credentials.yaml` 可由测试进程写入；不改来源文件，不打印凭据值，不复制日常会话或整个配置档。若原桌面配置档的模型选择含必要的自定义提供方、模型或端点，本地测试工程师从当前实际生效的配置来源（例如 `$SOURCE_DSH_HOME/profiles/desktop/cordis.patch.yml`）只提取相关设置，在本轮新建的网页配置档中配置；默认值已能使用同一模型时不做迁移。可在测试网页的“设置 → 模型”确认最终生效配置。没有可用凭据或必要设置时，受影响项记为环境未就绪，不算插件业务失败。
 
 依据：[DSH 本地凭据说明](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/credentials/credentials-local/README.zh.md)、[官方网页入口](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/bundle/web-app/README.zh.md)。
 
@@ -207,7 +207,7 @@ developer_instructions = """
 
 **T6（最后做）**：确认本次隔离宿主配置允许 `maxDepth=2`。在甲父会话调用 `spawn_agent(task_name="t6-outer", agent_type="reviewer", message="请实际调用 spawn_agent，task_name=t6-inner，agent_type=reviewer，message=请介绍职责；然后报告这次工具调用的实际结果")`。检查第一层子代理**真实调用** `spawn_agent`，实际启动下一层子代理，不以它口头说“已委派”作为证据。针对“遵守宿主现行上限”的插件责任，在被测产品 `src/tool.ts` 的委派处确认它每次从 `ctx.subagents.resolveMaxDepth()` 获取现行值并送入 `startActivation` 请求。此处不另测宿主上限 1 的拦截实现。如果第一层模型没有实际发出工具调用，记录“无法判断”，不临场变换提示、模型或配置追求通过。
 
-上述所有业务结果优先直接采用 网页界面当前工具卡片与子代理会话内容。仅当显示信息不足以判断某项时，再按现成会话记录定位与该项相关的内容；不默认读取 `session.v4.jsonl.zstd`、枚举所有 `request/header`、重建调用链或添加采集程序。
+上述所有业务结果优先直接采用网页界面当前工具卡片与子代理会话内容。仅当显示信息不足以判断某项时，再按现成会话记录定位与该项相关的内容；不默认读取 `session.v4.jsonl.zstd`、枚举所有 `request/header`、重建调用链或添加采集程序。
 
 ## 4. 重试、停止与记录
 
