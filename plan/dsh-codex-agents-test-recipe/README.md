@@ -21,7 +21,7 @@
 | 脚本 | 对应计划 | 作用 |
 |---|---|---|
 | `prepare.sh` | 2.1—2.4 | 建隔离目录、复制凭据、写角色、打包安装、设 `maxDepth=2` |
-| `start.sh` | 2.4 | 启动 web 服务，用隔离资料目录打开 Chrome |
+| `start.sh` | 2.4 | 启动 web 服务，用测试专用资料目录打开 Chrome |
 | `static-check.sh` | 3 节 T4、T5/T7、T6 | 打印计划原句与相关代码位置，供人工判断 |
 | `cleanup.sh` | 4 节 | 停本次服务、删本次创建的两份全局角色与 `BASE` |
 
@@ -61,7 +61,11 @@ bash plan/dsh-codex-agents-test-recipe/cleanup.sh
 
 ## 收尾要求
 
-计划第 4 节要求关闭本次临时浏览器窗口后再清理。`cleanup.sh` 会先检查 `$BASE/browser-profile` 是否仍被占用，被占用就报错退出，不会擅自结束浏览器进程，也不会留下删不干净的 `$BASE`。
+计划第 4 节要求关闭本次临时浏览器窗口后再清理。
+
+浏览器资料目录固定为 `/tmp/dca-browser-profile`（可用 `BROWSER_PROFILE=` 覆盖），不放 `$BASE` 内，原因有两个：Chrome 会把它写成 13 MB 左右，而 `cleanup.sh` 会删除整个 `$BASE`；固定路径还能让首次运行提示只出现一次。`start.sh` 会预置 `First Run` 与干净的 `Preferences`，并带 `--no-first-run --no-default-browser-check`，之后每轮复用同一份资料，不再重复弹窗。
+
+`cleanup.sh` 发现该窗口仍开着时只提示，不结束浏览器进程，`$BASE` 照常清理。
 
 `BASE` 从 `prepare.sh` 输出读取，或取 `/tmp/dca-test.*` 最新一个。
 
@@ -85,7 +89,7 @@ bash plan/dsh-codex-agents-test-recipe/cleanup.sh
 |---|---|
 | `prepare.sh` | 从零跑通：打包、安装到 web 配置档、`maxDepth` 写入为 2 |
 | 插件安装 | `--dump-config` 中出现 `dsh-codex-agents` 三处 |
-| `start.sh` | 服务打印地址、写入 `web.url`、Chrome 以 `$BASE/browser-profile` 打开 |
+| `start.sh` | 服务打印地址、写入 `web.url`、Chrome 以测试专用资料目录打开 |
 | `static-check.sh` | 能打印三处检查所需的计划原句与代码位置 |
 
 T1—T7 的业务结果尚未正式执行，按计划第 4 节表格由本地执行工程师记录。

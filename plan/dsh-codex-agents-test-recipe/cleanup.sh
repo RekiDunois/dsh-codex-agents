@@ -38,12 +38,12 @@ if [ -f "$BASE/logs/web.pid" ]; then
   fi
 fi
 
-# 计划第 4 节要求关闭本次临时浏览器窗口。资料目录被占用时 $BASE 删不干净，
-# 因此这里先检查，未关闭就提示并停止，不擅自结束用户的浏览器进程。
-if pgrep -f "user-data-dir=${BASE}/browser-profile" >/dev/null 2>&1; then
-  printf '错误：本次临时浏览器窗口仍在运行，占用 %s/browser-profile。\n' "$BASE" >&2
-  printf '请先关闭该 Chrome 窗口（不是日常窗口），再重新执行本脚本。\n' >&2
-  exit 1
+# 计划第 4 节要求关闭本次临时浏览器窗口。测试资料目录固定在 BASE 之外，
+# 被占用时不影响删除 BASE，但窗口仍开着会让下一轮复用同一会话状态，
+# 因此仍提示关闭；不擅自结束用户的浏览器进程。
+if [ -n "${BROWSER_PROFILE:-}" ] && pgrep -f "user-data-dir=${BROWSER_PROFILE}" >/dev/null 2>&1; then
+  printf '提示：测试浏览器窗口仍开着（资料目录 %s）。\n' "$BROWSER_PROFILE" >&2
+  printf '请关闭它；本脚本不会替你结束浏览器进程。BASE 仍会被清理。\n' >&2
 fi
 
 # 只删本次新建的两份全局角色

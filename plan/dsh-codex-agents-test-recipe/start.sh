@@ -25,9 +25,24 @@ fi
 test -d "$BASE/home/profiles/web" || fail "本次 web 配置档不存在：${BASE}/home/profiles/web"
 test -d "$BASE/consumer-a" || fail "缺少测试工作区：${BASE}/consumer-a"
 
+# 浏览器资料目录固定在本轮之外的路径：它会被 Chrome 写成 13 MB 左右，
+# 且 cleanup.sh 会删除整个 BASE。固定路径让首次运行弹窗只出现一次，
+# 之后每轮复用同一个测试专用资料，不再重复弹窗，也不影响日常浏览器。
+BROWSER_PROFILE="${BROWSER_PROFILE:-/tmp/dca-browser-profile}"
+printf 'BROWSER_PROFILE="%s"\n' "$BROWSER_PROFILE" >> "$BASE/logs/paths.env"
+
 note "工作区：${BASE}/consumer-a"
 note "DSH_HOME：${BASE}/home"
-note "浏览器资料：${BASE}/browser-profile"
+note "浏览器资料：${BROWSER_PROFILE}（测试专用，跨轮复用）"
+
+# 预置首次运行标记与干净退出状态，抑制"首次运行"与"恢复页面"提示。
+# 没有这一步，每换一个全新资料目录都会弹一次。
+mkdir -p "$BROWSER_PROFILE/Default"
+test -e "$BROWSER_PROFILE/First Run" || : > "$BROWSER_PROFILE/First Run"
+if ! test -e "$BROWSER_PROFILE/Default/Preferences"; then
+  printf '{"profile":{"exit_type":"Normal","exited_cleanly":true},"browser":{"has_seen_welcome_page":true}}' \
+    > "$BROWSER_PROFILE/Default/Preferences"
+fi
 
 # 服务在后台启动，等地址出现后再打开浏览器；地址含访问凭据，只在本机使用
 LOG="$BASE/logs/web.log"
@@ -56,8 +71,9 @@ printf '%s\n' "$URL" > "$BASE/logs/web.url"
 note "服务地址已写入 ${BASE}/logs/web.url"
 
 if [ -d "/Applications/Google Chrome.app" ]; then
-  open -na "Google Chrome" --args --user-data-dir="$BASE/browser-profile" --new-window "$URL"
-  note "已用隔离资料目录打开 Chrome"
+  open -na "Google Chrome" --args --user-data-dir="$BROWSER_PROFILE" \
+    --no-first-run --no-default-browser-check --new-window "$URL"
+  note "已用测试专用资料目录打开 Chrome：${BROWSER_PROFILE}"
 else
   note "没有找到 Chrome，请用其它 Chromium 浏览器的等效参数打开："
   printf '  %s\n' "$URL"
