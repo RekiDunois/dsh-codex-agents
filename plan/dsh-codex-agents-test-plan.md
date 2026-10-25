@@ -1,11 +1,11 @@
 # dsh-codex-agents 测试计划
 
-- 版本：v6
+- 版本：v7
 - 日期：2026-10-25
 - 状态：待审核
-- 依据：`plan/dsh-codex-agents.md` v8（提交 `010c391`）的成功标准 1–5
-- 上一版：v5；本版修复 T6 配置补丁格式、T4 启动进程号保存与等待检测；T1–T6 的测试目标不变
-- 范围：T1–T5 对应五条成功标准，一项一条；T6 对应执行计划 v8 验收步骤 11 的子代理再委派与层数上限，不属五条业务成功标准。执行计划「测试」一节的单元测试与边界表其余条目列入未决与交接
+- 依据：`plan/dsh-codex-agents.md` v11（提交 `180a822`）第 2 节的七条目标与必须保持的行为
+- 上一版：v6 依据执行计划 v8；v11 改为顶层预注册、全局工具、目录监听、调用前读实际内容、无磁盘索引、固定 24 位编号，旧版「首次调用才注册」「预设内再加载插件」「生成索引文件」的预期全部作废，本版按新架构重写
+- 范围：T1–T7 覆盖第 2 节七条目标，一项一条；其中 T4 是静态核对加一次首轮确认，不做计时判定。单元测试与第 9 节其余反例列入未决与交接
 
 ## 被测对象
 
@@ -15,51 +15,55 @@
 | 版本 | 分支 `plan/dsh-codex-agents-plugin` 的提交，执行时记录 `git rev-parse HEAD` |
 | 安装源 | 该提交 `npm pack` 的产物，经 `dsh plugin add` 装入，不用目录软链或可编辑安装 |
 | 运行入口 | 本次专用测试配置档启动的 DSH 网页界面 |
-| 观察对象 | 父会话与子会话日志、项目根下 `.dsh/agents-index.json` |
+| 观察对象 | 父会话与子会话日志；`spawn_agent` 的 `tool/result`；不再有 `.dsh/agents-index.json` 可看 |
 
 ## 必测清单
 
 | 编号 | 依据 | 输入或场景 | 预期结果 | 检查方式 |
 |---|---|---|---|---|
-| T1 | 成功标准 1 | 项目 A 放 `.codex/agents/reviewer.toml`，会话内调用 `spawn_agent(task_name="t1", agent_type="reviewer", message=...)` | 返回 `started subagent <id>`；子会话 `agentPreset` 形如 `dshca_reviewer_` 加 5 位数字；子会话系统提示含 toml 正文标记 `MARKER_OLD`；项目 A 根下生成 `.dsh/agents-index.json` 且含 `name` 为 `reviewer`、`scope` 为 `project` 的条目 | 读父会话 `tool/result`、子会话 `session` 与 `system/message`、索引文件 |
-| T2 | 成功标准 2 | 项目 A 与项目 B 各放 `name = "reviewer"` 的 toml，正文标记分别为 `MARKER_OLD`、`MARKER_BETA`，分别在两个项目的会话里调用 | 两个子会话人格各自只含本项目标记；两个 `agentPreset` 不同，且都符合 `dshca_reviewer_` 加 5 位数字 | 比对两份子会话的 `system/message` 与 `agentPreset`，比对两个项目的索引 |
-| T3 | 成功标准 3 | 项目 A 内调用 `spawn_agent(agent_type="nobody", ...)`；全局角色由独立 `HOME` 隔离，目录内有 `name = "global_only"` 的 toml | 报错文本含 `Unknown agent_type "nobody"`、项目角色 `reviewer`、全局角色 `global_only`，以及项目目录与全局目录两个路径；未创建子会话 | 读父会话 `tool/result` 文本；确认会话目录下无新增子会话 |
-| T4 | 成功标准 4 | 清空项目 A 的索引后冷启动，就绪后立即进入会话 | 就绪时索引文件不存在；首个请求的工具列表已含 `spawn_agent`；界面可输入、可发送并收到模型回复；首次调用之后索引文件才出现 | 比对 `boot.log` 就绪时刻与索引文件、首个 `request/header` 的 `tools[].name`、父会话的回复事件 |
-| T5 | 成功标准 5 | 把项目 A 的标记从 `MARKER_OLD` 改成 `MARKER_NEW` 后，在同一会话再次调用 `spawn_agent(agent_type="reviewer")` | 新子会话系统提示含 `MARKER_NEW`、不含 `MARKER_OLD`；`agentPreset` 与 T1 完全相同，不因内容变化而变；索引该条目 `mtimeMs` 与 `size` 已更新 | 读第二个子会话日志与索引条目 |
-| T6 | 执行计划 v8 验收步骤 11 | 把本插件配置的 `maxDepth` 设为 `2` 后，在项目 A 的会话起子 agent，要求它在自己会话内再调 `spawn_agent`；再把 `maxDepth` 设为 `1` 重试 | `maxDepth` 为 `2` 时：子会话工具列表含 `spawn_agent`，子会话内那次调用成功并产生第二层子会话；`maxDepth` 为 `1` 时：第二层委派被 `SubagentDepthError` 挡住，不产生第三层子会话 | 读子会话 `request/header` 的 `tools[].name`；读第二层调用的 `tool/result` 文本与新增子会话目录 |
+| T1 | 目标 1 | 工作区 A 根下放 `.codex/agents/reviewer.toml`，会话内调用 `spawn_agent(task_name="t1", agent_type="reviewer", message=...)` | 返回 `started subagent <id>`；子会话 `agentPreset` 匹配 `^dshca_reviewer_[0-9a-f]{24}$`；子会话系统提示含 toml 正文标记 `MARKER_OLD` | 读父会话 `tool/result`、子会话 `session` 与 `system/message` |
+| T2 | 目标 2 | 工作区 A 与 B 各放 `name = "reviewer"` 的 toml，标记分别为 `MARKER_OLD`、`MARKER_BETA`，分别在两个工作区的会话里调用 | 两个子会话人格各自只含本项目标记；两个 `agentPreset` 不同但都匹配 `^dshca_reviewer_[0-9a-f]{24}$` | 比对两份子会话的 `system/message` 与 `agentPreset` |
+| T3 | 目标 2、3 | 工作区 A 的会话依次调用 `agent_type` 为 `global_only`（仅全局目录有）与 `nobody`（两处都没有） | `global_only` 成功起子 agent 且人格含 `MARKER_GLOBAL`；`nobody` 报错文本含 `Unknown agent_type "nobody"`、`reviewer`、`global_only` 与两个目录路径；不出现工作区 B 独有的角色名；两次都不产生多余子会话 | 读父会话 `tool/result`；核对报错名单不含 B 的角色 |
+| T4 | 目标 4 | 静态核对 `src/index.ts` 的 `apply`：不逐目录读文件、不 `await` 扫描或注册，后台队列在 `apply` 返回后才调度 | `apply` 体内只有工具注册与后台任务调度；没有任何 `await` 指向扫描、解析或 `register`；首轮请求的工具列表含 `spawn_agent` | 读 `apply` 实现；确认首轮 `request/header` 的 `tools[].name` 含 `spawn_agent` 且该轮正常回复 |
+| T5 | 目标 5 | 把工作区 A 的标记从 `MARKER_OLD` 改成 `MARKER_NEW`，紧接着在同一会话再次调用 | 新子会话人格含 `MARKER_NEW`、不含 `MARKER_OLD`；`agentPreset` 与 T1 完全相同；无需重启 | 读第二个子会话日志 |
+| T6 | 目标 6、7 | 在会话 A 起子 agent，要求它在自己会话内再调 `spawn_agent`；再改宿主 `maxDepth` 为 `2` 重试 | 子会话工具列表含 `spawn_agent`；宿主上限为 `1` 时第二层委派报 `SubagentDepthError`；改为 `2` 后第二层成功并产生第三层子会话 | 读子会话 `request/header` 的 `tools[].name`；读第二层 `tool/result` |
+| T7 | 目标 5、第 9 节 | 在运行中的会话里新增一个角色 toml、删除一个已有 toml，随后各调用一次 | 新增角色可立即调用；删除的角色报未知角色且不再出现于名单；无需重启 | 读父会话两次 `tool/result` |
 
-执行顺序：T1 → T2 → T3 → T5 → T6（上限 2）→ T6（上限 1）→ 恢复配置 → T4。三条约束：T5 必须早于任何重启，否则「改文件不换编号」失去对照；T6 前后要改配置并重启两次，第三次重启是恢复原值；T4 自己也要冷启动，正好接在恢复之后。
+执行顺序：T4（静态核对，随时可做）→ T1 → T2 → T3 → T5 → T7 → T6（上限 1）→ T6（上限 2）。T5 必须早于任何重启；T6 改宿主配置后要重启，放在最后，免得影响前面的用例。
 
-范围外：安装流程本身的验收；`model`、`sandbox_mode`、`mcp_servers` 的语义；预设下拉框观感（执行计划已列为已知限制）；性能与并发指标。
+范围外：安装流程本身的验收；`model`、`sandbox_mode`、`mcp_servers` 的语义；宿主原生预设下拉框的可见性（v11 明确不属隔离范围）；性能与资源开销指标。
 
 ## 环境与准备
 
-全部材料放在仓库外，不提交 Git。下面的项目 A、B 分别对应 `consumer-a`、`consumer-b`。
+全部材料放在仓库外，不提交 Git。工作区 A、B 分别对应 `consumer-a`、`consumer-b`。
 
 | 步骤 | 命令或操作 | 通过标准 |
 |---|---|---|
 | 建目录 | `BASE=/tmp/dca-test`，建 `home`、`test-home/.codex/agents`、`Documents`、`consumer-a/.codex/agents`、`consumer-b/.codex/agents`、`logs`、`dist` | 目录存在 |
+| 全局角色 | `$BASE/test-home/.codex/agents/global-only.toml` 写 `name = "global_only"`，正文含 `MARKER_GLOBAL` | 文件存在 |
 | 构建 | 被测仓库根执行 `npm install`、`npm run build`、`npm run typecheck` | 三条命令均通过 |
 | 打包 | `npm pack --pack-destination "$BASE/dist"`，`tar -tzf` 检查内容 | 含 `lib/index.js`、`lib/index.d.ts`、`cordis.patch.yml`、locale 与图标 |
 | 建配置档 | `HOME="$BASE/test-home" DSH_HOME="$BASE/home" dsh --profile dca-test --from-default-profile web --dump-config` | 生成 `$BASE/home/profiles/dca-test/` |
 | 隔离默认工作区 | 在该配置档 `cordis.patch.yml` 追加 `workspace-controller` 行，`documentsDirectory: /tmp/dca-test/Documents` | 启动后默认工作区落在 `$BASE/Documents` 下 |
 | 装插件 | `HOME="$BASE/test-home" DSH_HOME="$BASE/home" dsh plugin --profile dca-test add "$BASE/dist"/dsh-codex-agents-*.tgz` | `jq -r '.dsh.profile.bundles[]' .../package.json` 含 `dsh-codex-agents` |
-| 启动／重启 | 按下方统一命令启动；重启前只停止并确认上一轮测试实例已退出。密钥由执行人在当前终端预先导出 | 本轮 `boot.log` 出现 `dsh web: http://127.0.0.1:<port>/?token=...`，`logs/pid` 存有本轮进程号 |
+| 启动 | 用下方统一命令启动 | 本轮 `boot.log` 出现地址，`logs/pid` 存本轮进程号 |
 | 注册工作区 | 侧栏「添加工作区…」加入 `consumer-a`、`consumer-b` | `jq -r '.tables.workspaces[] | .path' "$BASE/home/storages/workspace.json"` 含两个路径 |
 | 模型可用 | 在默认工作区发「回复 ok」 | 有模型回复 |
 
-首次启动与 T6、T4 的每次重启均使用下面两条命令。重启前只结束本次测试启动的实例：先核对 `$BASE/logs/pid` 的进程号确实属于本次实例，再执行 `kill "$(cat "$BASE/logs/pid")"`，确认 `kill -0 "$(cat "$BASE/logs/pid")"` 返回非零后重启；不得停止其他进程。执行人事先在当前终端导出 `DEEPSEEK_API_KEY`，不写进仓库或日志。每次启动都覆盖旧 `boot.log`，避免把上一轮的就绪记录当成本轮结果。
+每次启动与重启都用这两条命令，启动前先覆盖旧 `boot.log`，避免把上一轮的就绪记录当成本轮结果：
 
 ```bash
 HOME="$BASE/test-home" DSH_HOME="$BASE/home" dsh --profile dca-test --no-open --port 0 --host 127.0.0.1 > "$BASE/logs/boot.log" 2>&1 &
 printf '%s\n' "$!" > "$BASE/logs/pid"
 ```
 
-注册工作区只为在界面上建出 cwd 指向该目录的会话；v4 已不再枚举工作区，插件只按会话 cwd 定位项目。所有测试 DSH 启动与重启都使用 `HOME="$BASE/test-home"` 和 `DSH_HOME="$BASE/home"`；因此运行时的 `~/.codex/agents/` 对应 `$BASE/test-home/.codex/agents/`，不会访问用户真实全局角色目录。
+重启前只结束本次实例：先确认 `$BASE/logs/pid` 的进程号属于本次启动，再 `kill "$(cat "$BASE/logs/pid")"`，等 `kill -0` 返回非零后重启，不得停止其它进程。执行人事先在终端导出 `DEEPSEEK_API_KEY`，不写进仓库或日志。
 
-两条命令路径：`dsh` 为 `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`；`node` 为同目录下 `runtime/primary-runtime/dependencies/node/bin/node`。密钥只经环境变量传入，不写进仓库或记录文件。
+`HOME` 与 `DSH_HOME` 都指向 `$BASE` 下的目录，是本项能控制全局角色内容的前提：插件按 `~/.codex/agents/` 定位全局目录，而 `~/.` 跟随 `HOME`。注册工作区只为让界面上能建出 cwd 指向该目录的会话，v11 的角色范围由 `workspaceRegistry.list()` 决定，不扫描未登记目录。
 
-项目 A 的 `.codex/agents/reviewer.toml`：
+`dsh` 路径为 `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`；`node` 为同目录下 `runtime/primary-runtime/dependencies/node/bin/node`。
+
+工作区 A 的 `.codex/agents/reviewer.toml`：
 
 ```toml
 name = "reviewer"
@@ -70,9 +74,7 @@ developer_instructions = """
 """
 ```
 
-项目 B 用同名文件、标记改为 `MARKER_BETA`。全局角色写在 `$BASE/test-home/.codex/agents/global_only.toml`，`name = "global_only"`，`description = "全局测试角色"`，`developer_instructions = "全局角色标记 MARKER_GLOBAL"`。
-
-T4 不再额外批量生成角色文件：启动是否扫描，用「就绪时索引不存在、首次调用后才出现」直接判定，文件数量不参与。
+工作区 B 用同名文件、标记改为 `MARKER_BETA`。
 
 ## 执行步骤
 
@@ -81,72 +83,53 @@ T4 不再额外批量生成角色文件：启动是否扫描，用「就绪时�
 CHILD="$BASE/home/sessions/--tmp-dca-test-consumer-a--/<id>/session.v4.jsonl.zstd"
 zstd -dc "$CHILD" | jq -c 'select(.type=="session") | {id, agentPreset, origin, parentSession}'
 zstd -dc "$CHILD" | jq -r 'select(.type=="system/message") | .data.message.content[0].text' | grep -c MARKER_OLD
+zstd -dc "$CHILD" | jq -r 'select(.type=="request/header") | .data.header.tools[]?.name' | sort -u
 
 # 父会话：子会话的 parentSession 就是父会话目录名
 PARENT="$BASE/home/sessions/--tmp-dca-test-consumer-a--/<parentSession>/session.v4.jsonl.zstd"
 zstd -dc "$PARENT" | jq -c 'select(.type=="tool/result") | .data.message.content[0].text' | tail -5
-
-# 索引
-jq -c '.agents[] | {name, scope, presetId, mtimeMs, size, error}' "$BASE/consumer-a/.dsh/agents-index.json"
 ```
 
-项目 B 的会话目录同理为 `--tmp-dca-test-consumer-b--`。
+工作区 B 的会话目录同理为 `--tmp-dca-test-consumer-b--`。
 
-**T1**：在项目 A 的会话发「调用 `spawn_agent`，`task_name` 用 t1，`agent_type` 用 reviewer，`message` 说一句你的职责」。判定：`tool/result` 匹配 `started subagent <id>`；子会话 `agentPreset` 匹配 `^dshca_reviewer_[0-9]{5}$`、`origin` 为 `subagent`；`system/message` 含 `MARKER_OLD`；索引含 `name` 为 `reviewer`、`scope` 为 `project` 的条目，其 `presetId` 与子会话 `agentPreset` 一致。
+**T1**：在工作区 A 的会话发「调用 `spawn_agent`，`task_name` 用 t1，`agent_type` 用 reviewer，`message` 说一句你的职责」。判定：`tool/result` 匹配 `started subagent <id>`；子会话 `agentPreset` 匹配 `^dshca_reviewer_[0-9a-f]{24}$`、`origin` 为 `subagent`；`system/message` 含 `MARKER_OLD`。v11 取消了 `.dsh/agents-index.json`，不再检查索引文件。
 
-**T2**：在项目 B 的会话发同一条提示，`task_name` 用 t2。判定：项目 B 子会话 `system/message` 含 `MARKER_BETA` 且不含 `MARKER_OLD`；两个子会话的 `agentPreset` 都匹配 `^dshca_reviewer_[0-9]{5}$` 但取值不同，因为编号由项目根路径算出，不含文件内容哈希。
+**T2**：在工作区 B 的会话发同一条提示，`task_name` 用 t2。判定：B 的子会话 `system/message` 含 `MARKER_BETA` 且不含 `MARKER_OLD`；两个 `agentPreset` 都匹配 `^dshca_reviewer_[0-9a-f]{24}$` 但取值不同，因为编号含来源目录，不含文件内容。
 
-**T3**：全局角色目录由独立 `HOME` 隔离，内容在准备阶段已固定为 `name = "global_only"`，预期值取 TOML 的 `name` 字段，不取文件名。
+**T3**：在工作区 A 的会话先发「调用 `spawn_agent`，`task_name` 用 t3a，`agent_type` 用 global_only，`message` 说一句你的职责」。判定：返回 `started subagent <id>`，子会话 `system/message` 含 `MARKER_GLOBAL`，`agentPreset` 匹配 `^dshca_global_only_[0-9a-f]{24}$`。
 
-在项目 A 的会话发「调用 `spawn_agent`，`task_name` 用 t3，`agent_type` 用 nobody」。判定：`tool/result` 文本含 `Unknown agent_type "nobody"`；含项目角色 `reviewer`；含全局角色 `global_only`；含项目 A 与 `$BASE/test-home/.codex/agents` 两个目录路径；这一轮之后 `$BASE/home/sessions/--tmp-dca-test-consumer-a--/` 下没有新增子会话目录。
+再发「调用 `spawn_agent`，`task_name` 用 t3b，`agent_type` 用 nobody」。判定：`tool/result` 文本含 `Unknown agent_type "nobody"`、`reviewer`、`global_only` 与 `$BASE/consumer-a/.codex/agents`、`$BASE/test-home/.codex/agents` 两个路径；文本不含工作区 B 独有的角色名；这一轮不新增子会话目录。
 
-再在同一会话发一次 `agent_type` 用 `global_only` 的调用，确认项目角色目录存在时全局独有角色仍可起子 agent。判定：返回 `started subagent <id>`，子会话 `system/message` 含 `MARKER_GLOBAL`，`agentPreset` 匹配 `^dshca_global_only_[0-9]{5}$`。
+**T5**：把工作区 A 的标记从 `MARKER_OLD` 改成 `MARKER_NEW`，`stat -f %m` 确认 mtime 已变，并立即（不等待）在同一会话再发 T1 的提示，`task_name` 用 t5。判定：新子会话 `system/message` 含 `MARKER_NEW` 且不含 `MARKER_OLD`；`agentPreset` 与 T1 完全相同。v11 要求调用前重读实际内容，所以「改完立即调用」正是本条的关键输入，不能先等待或重启。
 
-**T5**：把项目 A 的标记从 `MARKER_OLD` 改成 `MARKER_NEW`，用 `stat -f %m` 确认 mtime 已变。同一会话再发 T1 的提示，`task_name` 用 t5，全程不重启。判定：新子会话 `system/message` 含 `MARKER_NEW` 且不含 `MARKER_OLD`；`agentPreset` 与 T1 完全相同；索引该条目 `mtimeMs` 或 `size` 已变化而 `presetId` 未变。两个标记互不包含，字符串检查才成立。顺带记录改前改后预设下拉框的条目数，执行计划验收步骤 9 要求不因改文件而多出条目。
+**T7**：在工作区 A 的会话里，先新增 `.codex/agents/extra.toml`（`name = "extra"`，正文含 `MARKER_EXTRA`），再发「调用 `spawn_agent`，`task_name` 用 t7a，`agent_type` 用 extra」。判定：返回 `started subagent <id>`，子会话含 `MARKER_EXTRA`，无需重启。
 
-**T6**：宿主 `maxDepth` 默认值是 `1`，一层就到顶，因此本项必须先抬高上限再验限层。
+随后删除 `.codex/agents/extra.toml`，再发「调用 `spawn_agent`，`task_name` 用 t7b，`agent_type` 用 extra」。判定：报错含 `Unknown agent_type "extra"`，且可用名单里不再出现 `extra`。
 
-第一步，把上限设为 `2`。在测试配置档 `$BASE/home/profiles/dca-test/cordis.patch.yml` 中追加完整的 `- insert:` 补丁项，以相同 `id` 覆盖已安装插件包的默认配置。若该文件原本已有此 `id` 的补丁项，就修改原项，不重复添加；其他配置不变：
+**T6**：宿主 `maxDepth` 默认值是 `1`，一层就到顶，因此本项要先验限层、再抬上限验成功。
+
+第一步，上限保持默认 `1`。在工作区 A 的会话发「调用 `spawn_agent`，`task_name` 用 t6，`agent_type` 用 reviewer，`message` 要求你在自己会话里再调用一次 `spawn_agent`，`agent_type` 用 reviewer」。判定：子会话首个 `request/header` 的 `tools[].name` 含 `spawn_agent`（全局工具被子代理继承）；子会话内那次调用报 `SubagentDepthError`，不产生第三层子会话。
+
+第二步，把宿主上限抬到 `2`。`maxDepth` 是宿主 `subagent` 行的配置，不是本插件的配置，改的是测试配置档 `cordis.patch.yml`：
 
 ```yaml
-- insert:
-    - id: dsh-codex-agents
-      name: dsh-codex-agents
-      config:
-        maxDepth: 2
+- id: subagent
+  name: '@deepseek-ai/dsh-subagent'
+  config:
+    maxDepth: 2
 ```
 
-按环境准备中的统一命令重启并确认启动成功。然后在项目 A 的会话发「调用 `spawn_agent`，`task_name` 用 t6，`agent_type` 用 reviewer，`message` 要求你在自己会话里再调用一次 `spawn_agent`，`agent_type` 用 reviewer」。判定：子会话首个 `request/header` 的 `tools[].name` 含 `spawn_agent`；子会话内那次调用返回 `started subagent <id>`，产生第二层子会话。
+按统一命令重启，重复上面同一提示。判定：子会话内那次调用返回 `started subagent <id>`，产生第三层子会话。
 
-第二步，把同一补丁项改成 `maxDepth: 1`，按统一命令重启实例，重复上面同一提示。判定：第二层委派的 `tool/result` 文本含 `SubagentDepthError`；不新增第三层子会话目录；第一层调用本身仍返回 `started subagent <id>`。
+第三步，删掉这条 `config` 恢复默认，按统一命令重启。改动与恢复记进结果记录，写清改前值、改后值和重启次数。
 
-第三步，删除本次添加的整个 `- insert:` 补丁项（如果原本已有该项，则恢复原内容），按统一命令重启，再进 T4。配置改动与恢复都要记进结果记录，写清改前值、改后值和重启次数。
+**T4**：本条以静态核对为主，只做一次运行时确认。
 
-**T4**：删 `$BASE/consumer-a/.dsh` 后按统一命令冷启动。检测读取本轮进程号与重新生成的 `boot.log`，最多等待 60 秒；只有检测到本轮就绪日志才算启动就绪：
+先读 `src/index.ts` 的 `apply`，逐条确认：函数体内只有 `ctx.tools.register` 与后台任务调度；没有任何 `await` 指向目录扫描、TOML 解析或 `agentPresets.register`；扫描入口在 `apply` 返回之后才启动。再读 `src/manager.ts`，确认初扫与注册走的是限并发队列，且每批之间有让出事件循环的 `await`。这两处任一不成立即记业务失败。
 
-```bash
-PID=$(cat "$BASE/logs/pid") || exit 1
-READY=0
-for i in $(seq 1 300); do
-  if grep -q "dsh web: http" "$BASE/logs/boot.log" 2>/dev/null; then READY=1; break; fi
-  if ! kill -0 "$PID" 2>/dev/null; then echo "process exited" >&2; break; fi
-  sleep 0.2
-done
-if [ "$READY" -ne 1 ]; then
-  echo "startup timed out or process exited before ready" >&2
-  exit 1
-fi
-echo ready
-```
+再做一次运行时确认：按统一命令冷启动，等地址出现后进入会话，发 T1 的提示（`task_name` 用 t4）。判定：父会话首个 `request/header` 的 `data.header.tools[].name` 含 `spawn_agent`，且该轮出现 `assistant/message` 与 `turn/end`。
 
-检测返回非零时，本项记无法判断并保留本轮 `boot.log`，不要当成「启动扫描阻塞」的业务失败。成功就绪后判定四条同时成立：
-
-1. 就绪那一刻 `$BASE/consumer-a/.dsh/agents-index.json` 不存在，说明启动没有扫描；
-2. 父会话首个 `request/header` 的 `data.header.tools[].name` 含 `spawn_agent`；
-3. 发出 T1 的提示（`task_name` 用 t4）后该轮出现 `assistant/message` 与 `turn/end`，等待期间界面可输入可发送；
-4. 该次调用之后索引文件才出现，说明扫描推迟到了首次调用。
-
-若就绪时索引已存在，说明启动仍在扫描，本项记业务失败。
+不测启动耗时。宿主 `dsh-web-app` 在 `loader.await()` 之后才打印地址，即等全部插件加载完才输出，插件若同步阻塞只会让地址一起推迟，地址时刻无法区分两种情况，用它作判定只会得到假阴性。
 
 ## 结果记录
 
@@ -160,22 +143,24 @@ echo ready
 | T4 | | | | | |
 | T5 | | | | | |
 | T6 | | | | | |
+| T7 | | | | | |
 
 状态只用：通过、业务失败、无法判断、未执行。无法判断时写明环境或测试问题，不写成通过。
 
 ## 重试与停止
 
 - 可重试的外部故障：模型服务连接错误或超时、包管理器网络失败、端口占用。同一条件最多重试 2 次，记录触发原因与结果。
-- 不可重试：业务结果不符预期、报错文本不符、索引字段不符、编号不符。按业务失败记录，不放宽预期、不改输入、不换判定方式。
+- 不可重试：业务结果不符预期、报错文本不符、编号格式不符。按业务失败记录，不放宽预期、不改输入、不换判定方式。
 - 改动提示词、toml 内容、入口、配置档设置或断言，视为方案修订，先说明受影响项再继续。
-- 出现以下情况停止并保留现场：服务无法启动、模型持续不可用、插件加载报错、`smol-toml` 未随依赖装入。受影响项记未执行或无法判断。
-- 收工前 `kill` 启动时记下的进程号，再决定是否删除 `$BASE`。
+- 出现以下情况停止并保留现场：服务无法启动、模型持续不可用、插件加载报错、`smol-toml` 或 `@deepseek-ai/schemastery` 未随依赖装入。受影响项记未执行或无法判断。
+- 收工前 `kill` 本次进程号，再决定是否删除 `$BASE`。
 
 ## 未决与交接
 
-1. 验收环境已由验收决定人确认为独立 `HOME` 与 `DSH_HOME` 加自制 web 配置档，不走执行计划验收步骤 2 的 desktop 界面安装。两处理由：`headless` 与 `sdk` 配置档的默认配置没有 `agent-presets` 服务，插件 `inject` 缺项不会激活；共用真实 `desktop` 配置档会把索引文件写进用户已有的项目根。安装仍走 `dsh plugin add` 这一受支持路径。
-2. 执行计划 v5 起改为「子 agent 的工具集含本插件自己的 `spawn_agent`」，靠 `maxDepth` 挡层数，v6、v7、v8 沿用。T6 对应其验收步骤 11。测试时若发现子会话工具列表里没有 `spawn_agent`，属业务失败，不要当成环境问题绕过。
-3. 执行计划「测试」一节的六个 `node:test` 文件与边界表其余条目（索引不可写降级、项目根找不到时写家目录、`maxDepth` 能力不匹配）本次不列为必测项。若要纳入，建议各补一条独立用例。
-4. 模型密钥由执行人提供。本次用独立 `HOME` 与 `DSH_HOME`，读不到用户 `~/.dsh/.credentials.yaml` 里的记录，密钥只能经环境变量传入；不可用时依赖模型的测试项记无法判断。
-5. 测试使用独立的 `HOME="$BASE/test-home"`，全局角色只放 `$BASE/test-home/.codex/agents/`，T3 通过测试创建的 `global_only.toml` 确认可用角色列表。不得读取、创建或修改用户真实 `~/.codex/agents/`。`HOME` 同时影响配置档缓存与包管理器路径，执行时若出现与 `HOME` 相关的加载异常，记无法判断并保留日志，不判业务失败。
-6. 专用计划审核角色 `plan_reviewer` 在当前环境不可用：DSH 预设只有 `implementation-reviewer`，本机也没有 codex 命令行。计划审核由验收决定人承担，不用普通代理替代。
+1. 验收环境由验收决定人确认为独立 `HOME` 与 `DSH_HOME` 加自制 web 配置档，不用 `desktop` 配置档：`headless` 与 `sdk` 缺 `agent-presets`，插件 `inject` 四项缺一不激活；共用真实配置档会把角色写进用户已有工作区。
+2. v11 第 11 节明确本轮只改执行计划，测试计划的旧预期由测试计划负责人按已批准范围修订。本版据此重写，未新增超出第 2 节七条目标的用例。
+3. 执行计划第 9 节其余反例（目录原子替换、工作区删除与扫描并发、预设 ID 被外部占用、插件卸载后重载）本次不列为必测项。它们需要构造并发或外部占用条件，建议作为独立用例另行批准。
+4. 单元测试文件清单（`toml`、`roster`、`preset`、`manager`、`watch` 等）属生产模块自测，本次不列为必测项。
+5. 模型密钥由执行人提供。独立 `HOME` 与 `DSH_HOME` 读不到用户 `~/.dsh/.credentials.yaml`，密钥只能经环境变量传入；不可用时依赖模型的测试项记无法判断。
+6. 全局角色只放 `$BASE/test-home/.codex/agents/`，不得读取、创建或修改用户真实 `~/.codex/agents/`。`HOME` 同时影响配置档缓存与包管理器路径，出现与 `HOME` 相关的加载异常时记无法判断并保留日志。
+7. 专用计划审核角色 `plan_reviewer` 在当前环境不可用：DSH 预设只有 `implementation-reviewer`，本机也没有 codex 命令行。计划审核由验收决定人承担，不用普通代理替代。
