@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Codex agents",
+    "description": "Expose a Codex-compatible spawn_agent tool backed by .codex/agents/*.toml role definitions."
+  }
+}

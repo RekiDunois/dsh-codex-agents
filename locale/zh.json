@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Codex 角色代理",
+    "description": "提供与 Codex 同签名的 spawn_agent，角色来自 .codex/agents/*.toml。"
+  }
+}
