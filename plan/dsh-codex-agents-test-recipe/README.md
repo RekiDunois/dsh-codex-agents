@@ -13,7 +13,7 @@
 
 ## 前置
 
-- 在真实源码目录执行，不能在 `worktrees/` 或 `apm-consumers/` 下。
+- 在真实源码目录执行，不能在 `worktrees/` 或 `apm-consumers/` 下。本仓库的 PR 工作树 `../worktree/dsh-codex-agents-pr1-execution` 与主检出共用同一 `.git`，属于同一仓库的检出而非拷贝，可以直接作为来源目录；`prepare.sh` 的守卫只拦共识点名的 `worktrees/` 与 `apm-consumers/`。
 - 必须让 direnv 生效，取得 Node 24 以上。实测为 Node 26.8.1。
 - 需要 `yq`。
 - 一个可用的浏览器 MCP，能打开 URL 并在页面里点击、输入。没有 MCP 时，把地址手动粘到任意浏览器也能做，只是界面操作要手工完成。
@@ -124,5 +124,5 @@ T1—T7 的业务结果尚未正式执行，按计划第 4 节表格由本地执
 - 会话目录名由工作区绝对路径转义而来，路径含空格时需另行处理。
 - `start.sh` 前台等待服务进程；结束用 Ctrl-C 或 `kill "$(cat $BASE/logs/web.pid)"`。
 - 浏览器 MCP 是否可用由执行工程师确认；不可用时把地址手动粘到浏览器，界面操作改由人工完成。
-- `cleanup.sh` 只在确认命令行是 `dsh web` 时才结束进程，避免进程号被回收后误杀无关进程。
+- `cleanup.sh` 只在确认命令行是 DSH 的 web 入口（`cli.js web`）时才结束进程，避免进程号被回收后误杀无关进程。
 - 本次 `maxDepth=2` 只写在 `$BASE/home/profiles/web/cordis.patch.yml`，不影响用户现有配置。

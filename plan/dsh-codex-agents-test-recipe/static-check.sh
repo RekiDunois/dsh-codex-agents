@@ -39,8 +39,19 @@ have "src/watch.ts 中的 fs.watch 调用"
 grep -nE 'watch\(|node:fs' src/watch.ts || printf '(无)\n'
 have "src/watch.ts 中 change／rename 的处理位置"
 grep -nE 'change|rename' src/watch.ts || printf '(无)\n'
+have "src/watch.ts 中 fs.watch 回调与 schedule() 的实现"
+# 计划 §6.4 规定事件没有文件名时刷新整个目录，因此实现用无参回调，
+# 不按 change／rename 分派；这里把回调与 schedule() 原文摆出来供对照。
+grep -n -B2 -A6 'const watcher = watch(' src/watch.ts || printf '(无)\n'
+printf '\n'
+sed -n '/private schedule(entry: WatchEntry)/,/^  }/p' src/watch.ts || printf '(无)\n'
 have "src/watch.ts 与 src/manager.ts 中的刷新调度位置"
 grep -nE 'refresh|schedule|queue|dirty|pending' src/watch.ts src/manager.ts || printf '(无)\n'
+cat <<'TXT'
+对照说明：fs.watch 回调不接收事件类型，收到任何 change／rename 都调用
+schedule()，经防抖后触发 onChange，由 manager 重新列举目录并刷新预设。
+这与计划 §6.4「事件没有文件名或表示目录本身变化时刷新整个对应目录」一致。
+TXT
 
 head2 "T6（插件侧责任）"
 cat <<'TXT'
