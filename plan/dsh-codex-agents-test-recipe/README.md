@@ -112,8 +112,9 @@ bash plan/dsh-codex-agents-test-recipe/start.sh
 |---|---|
 | `prepare.sh` | 从零跑通：打包、安装到 web 配置档、`maxDepth` 写入为 2 |
 | 插件安装 | `--dump-config` 中出现 `dsh-codex-agents` 三处 |
-| `start.sh` | 服务打印地址并写入 `web.url`；浏览器交给 MCP |
-| `static-check.sh` | 能打印三处检查所需的计划原句与代码位置 |
+| `start.sh` | 服务打印地址并写入 `web.url`；`web.pid` 记录的是真实 `cli.js web` 进程；浏览器交给 MCP |
+| `cleanup.sh` | 能按 `web.pid` 停掉本次服务，执行后无残留 `cli.js web`；只删本次两份全局角色 |
+| `static-check.sh` | 能打印三处检查所需的计划原句与代码位置，退出码 0 |
 
 T1—T7 的业务结果尚未正式执行，按计划第 4 节表格由本地执行工程师记录。
 
