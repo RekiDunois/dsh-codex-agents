@@ -2,7 +2,7 @@
 
 - 版本：v13
 - 日期：2026-10-26
-- 状态：已修订，待独立复核；未进行正式测试
+- 状态：第一、第二关已通过（2026-10-26）；T1—T7 已于 2026-10-26 按本计划执行，逐项结果与执行记录见第 4 节及 4.1
 - 目标：PR #1 已确认的六条业务成功标准，以及 `plan/dsh-codex-agents.md` v12（产品设计沿用已批准的 v11）
 - 目标宿主参考版本：`@deepseek-ai/dsh-desktop-runtime@0.2.1-rc.3`，参考源码 `deepseek-ai/deepseek-harness@22ddee3792402c3e70ec5f86a63c3e3e895a2f60`；正式执行只记录实际版本及适用性
 - 本版调整：沿用 v12 的网页入口、当前账户 `HOME`、隔离 `DSH_HOME` 与测试工作区、不单独管理浏览器资料目录及保留运行记录的约定；第 2.5 节补齐复用已有隔离安装时恢复测试输入的步骤。T1—T7、检查方式与范围不变。
@@ -231,14 +231,33 @@ developer_instructions = """
 
 | 编号 | 结果（通过／业务失败／无法判断／未执行） | 实际输入与观察到的结果 | 记录位置或复用来源 |
 |---|---|---|---|
-| T1 | 未执行 | — | — |
-| T2 | 未执行 | — | — |
-| T3 | 未执行 | — | — |
-| T4 | 未执行 | — | — |
-| T5 | 未执行 | — | — |
-| T6 | 未执行 | — | — |
-| T7 | 未执行 | — | — |
+| T1 | 通过 | 甲 `consumer-a` 会话调用 `spawn_agent(task_name="t1", agent_type="reviewer", message=…)`，工具卡显示子代理 t1 启动并完成（6 秒），答复含 `MARKER_OLD`，全文不含 `MARKER_WORLD`；子代理会话预设为 `dshca_reviewer_72e917d8…`（甲工作区来源） | `$BASE/logs/evidence/T1-snapshot.txt`、`T1-screenshot.txt` |
+| T2 | 通过 | 复用 T1 甲结果；乙 `consumer-b` 会话按同一消息调用 `t2`，工具卡显示子代理 t2 启动并完成，答复含 `MARKER_BETA`，未出现甲或全局标记；子代理会话预设为 `dshca_reviewer_ca98c7b3…`（乙工作区来源），与 T1 的甲预设不同 | `$BASE/logs/evidence/T2-snapshot.txt` |
+| T3 | 通过 | 甲调用 `t3a`/`global_only` 成功，答复含 `MARKER_GLOBAL`（预设 `dshca_global_only_4aa39718…`）；再调用 `t3b`/`nobody` 返回 `Error: Unknown agent_type "nobody". Available: global_only, implementation_reviewer, plan_reviewer, reviewer`，未启动子代理，名单不含乙独有的 `beta_only` | `$BASE/logs/evidence/T3a-snapshot.txt`、`T3b-snapshot.txt` |
+| T4 | 通过 | `src/index.ts` 的 `apply` 到 `ctx.effect` 之间无 `await`、无同步目录读取：只 `createManager`、`ctx.tools.register`，扫描由 `setTimeout(…, 0)` 延后到 `manager.start()`；随后复用 T1 首次委派成功，说明工具在首次会话可用 | `$BASE/logs/evidence/static-check.txt`、`T1-snapshot.txt` |
+| T5 | 通过 | 不重启服务、同一甲会话内把 `consumer-a/.codex/agents/reviewer.toml` 的 `MARKER_OLD` 改为 `MARKER_NEW` 后立即调用 `t5`，新子代理答复 `MARKER_NEW`，不再使用旧标记；共享源码检查确认 `src/watch.ts` 用 `node:fs.watch` 监听，事件经 `schedule()` 防抖后异步刷新 | `$BASE/logs/evidence/T5-snapshot.txt`、`static-check.txt` |
+| T6 | 通过 | 隔离配置 `subagent.config.maxDepth=2`。甲父会话调用 `t6-outer`（reviewer），该子代理真实调用 `spawn_agent(task_name="t6-inner")` 并得到 `started subagent 1d80a3d4…`，内层答复 `MARKER_NEW`；内层会话 `delegationDepth=2`、外层 `delegationDepth=1`。插件侧 `src/tool.ts` 每次调用先 `ctx.subagents.resolveMaxDepth()` 再送入 `startActivation` 请求 | `$BASE/logs/evidence/T6-twolevel-snapshot.txt`、`static-check.txt`、`$BASE/home/sessions/…` |
+| T7 | 通过 | 同一甲会话内新建 `extra.toml` 后立即调用 `t7a`/`extra`，子代理启动并答复 `MARKER_EXTRA`（预设 `dshca_extra_1d506eae…`）；删除该文件后立即调用 `t7b`/`extra`，返回 `Error: Unknown agent_type "extra". Available: global_only, implementation_reviewer, plan_reviewer, reviewer`，未启动子代理，名单不含 `extra`；全程未重启 | `$BASE/logs/evidence/T7a-snapshot.txt`、`T7b-snapshot.txt` |
+
+T1—T7 全部取得当前有效通过结果，无业务失败项。
 
 执行记录同时写明产品提交 `SOURCE_SHA`、正式包路径、实际 DSH 网页运行时版本、隔离的 `DSH_HOME` 与 `BASE`、生效提供方／模型及必要的配置覆盖、正式尝试与失败原因。配置和输出只保存检查这些业务目标所需的部分。
 
-**交接**：本文件是 v13 完整待审候选，未由编写者自行批准第一、第二关口。由独立测试计划审核者核对上述目标覆盖和可执行性，随后本地测试工程师在已隔离的网页配置档准备及接线，执行工程师运行并记录正式结果。没有独立子代理复核，不将本次自查写为独立批准。
+### 4.1 正式执行记录（2026-10-26）
+
+| 项目 | 实际值 |
+|---|---|
+| 产品提交 `SOURCE_SHA` | `59ea676ee54471b75364524bbe45f25205296efc`（`src/`、`lib/`、`locale/`、`package.json` 与打包时所用 `e15e872` 完全相同） |
+| 正式安装包 | `/tmp/dca-test.ptjKdb/dist/dsh-codex-agents-0.1.0.tgz`，由 `dsh plugin --profile web add` 安装到隔离配置档 |
+| DSH 网页运行时 | `dsh 0.2.1-rc.3` |
+| 隔离 `DSH_HOME` | `/tmp/dca-test.ptjKdb/home`（`BASE=/tmp/dca-test.ptjKdb`，沿用准备阶段安装，未重新打包或安装） |
+| 测试工作区 | `$BASE/consumer-a`、`$BASE/consumer-b`；全局角色目录为当前账户 `$HOME/.codex/agents` |
+| 生效模型 | 提供方 `deepseek-official`、模型 `deepseek-flash`、推理等级 `high`（未做额外覆盖） |
+| 配置覆盖 | 仅 `subagent.config.maxDepth=2`，写在本次 `$BASE/home/profiles/web/cordis.patch.yml` |
+| 环境预检 | 甲会话发送“环境预检：请用一句话回复…”，模型返回“模型可用。”，不计入 T1—T7 |
+| 正式尝试 | 每项一次；无外部故障重试，无业务失败 |
+| 操作偏差 | 网页「添加工作区」按钮在本轮 headless 浏览器中不弹出目录选择框，两个工作区改由页面内调用宿主同一 `workspace/create` 接口登记（路径为 `$BASE/consumer-a`、`$BASE/consumer-b`），随后的工作区列表、会话创建与 T1—T7 全部在网页界面完成；产品代码与业务检查方式未变 |
+| T6 过程记录 | 第一次 T6 消息因引号书写错误，只启动了单层 `t6-inner`（`delegationDepth=1`），不计入 T6；随后按计划原文重新发送 `t6-outer` 消息，取得两层真实委派结果，作为 T6 正式结果 |
+| 收尾 | `cleanup.sh` 停止 web 服务（PID 98942）、删除本次创建的两份全局角色，`BASE` 与运行记录保留；关闭测试网页与浏览器进程 |
+
+**交接**：T1—T7 已由本地执行工程师按 v13 执行并记录，第三关待独立测试计划审核者复核。本记录不代表合并批准。

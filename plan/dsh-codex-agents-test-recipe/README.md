@@ -116,7 +116,7 @@ bash plan/dsh-codex-agents-test-recipe/start.sh
 | `cleanup.sh` | 能按 `web.pid` 停掉本次服务，执行后无残留 `cli.js web`；只删本次两份全局角色 |
 | `static-check.sh` | 能打印三处检查所需的计划原句与代码位置，退出码 0 |
 
-T1—T7 的业务结果尚未正式执行，按计划第 4 节表格由本地执行工程师记录。
+T1—T7 已于 2026-10-26 按计划第 4 节执行并记录，逐项结果与执行记录见该节及 4.1。
 
 ## 已知限制
 
