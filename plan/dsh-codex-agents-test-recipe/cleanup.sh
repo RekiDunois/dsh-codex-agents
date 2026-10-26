@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dsh-codex-agents 测试 recipe：按测试计划 v12 第 4 节收尾。
+# dsh-codex-agents 测试 recipe：按测试计划 v13 第 4 节收尾。
 #
 # 用法（仓库根）：
 #   BASE=/tmp/dca-test.实际目录 bash plan/dsh-codex-agents-test-recipe/cleanup.sh

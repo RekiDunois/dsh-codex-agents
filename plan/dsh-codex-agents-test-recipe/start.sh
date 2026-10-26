@@ -4,7 +4,7 @@
 # 用法（仓库根）：
 #   BASE=/tmp/dca-test.实际目录 bash plan/dsh-codex-agents-test-recipe/start.sh
 #
-# 对应测试计划 v12 第 2.4 节。服务在本终端前台运行，Ctrl-C 结束；
+# 对应测试计划 v13 第 2.4 节。服务在本终端前台运行，Ctrl-C 结束；
 # 浏览器由执行工程师的现有工具管理，不规定资料目录。
 
 set -euo pipefail

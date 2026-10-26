@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# dsh-codex-agents 测试 recipe：按测试计划 v12 第 2 节准备隔离的 web 运行环境。
+# dsh-codex-agents 测试 recipe：按测试计划 v13 第 2 节准备隔离的 web 运行环境。
 #
 # 用法（仓库根，必须让 direnv 生效以取得 Node 24+）：
 #   bash plan/dsh-codex-agents-test-recipe/prepare.sh
 #
-# 本脚本对应 v12 第 2.1—2.4 节，只做环境准备与安装，不执行 T1—T7。
+# 本脚本对应 v13 第 2.1—2.4 节，只做环境准备与安装，不执行 T1—T7。
 # 隔离范围：只隔离本次 DSH_HOME 与测试工作区；
 # HOME 不变，全局角色按计划写入 $HOME/.codex/agents，仅新建、不覆盖。
 

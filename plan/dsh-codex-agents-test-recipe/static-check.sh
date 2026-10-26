@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# dsh-codex-agents 测试 recipe：为 v12 第 3 节的三处源码检查定位材料。
+# dsh-codex-agents 测试 recipe：为 v13 第 3 节的三处源码检查定位材料。
 #
 # 用法（仓库根）：
 #   bash plan/dsh-codex-agents-test-recipe/static-check.sh
 #
-# 本脚本不做通过/失败判定。测试计划 v12 第 3 节要求的是"读取被测产品源码
+# 本脚本不做通过/失败判定。测试计划 v13 第 3 节要求的是"读取被测产品源码
 # 并确认某项行为"，结论由执行工程师按计划原文人工判断。脚本只负责：
 #   1. 打印计划要求核对的原句；
 #   2. 把相关代码段与出现位置摆出来，便于逐条对照。
@@ -52,4 +52,4 @@ grep -nE 'resolveMaxDepth|startActivation' src/tool.ts || printf '(无)\n'
 have "src/tool.ts 中 maxDepth 送入请求的代码段"
 grep -n -B3 -A6 'maxDepth' src/tool.ts || printf '(无)\n'
 
-printf '\n以上为材料输出。三项是否成立，按计划 v12 第 3 节原文由执行工程师判断并记录。\n'
+printf '\n以上为材料输出。三项是否成立，按计划 v13 第 3 节原文由执行工程师判断并记录。\n'
