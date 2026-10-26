@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# dsh-codex-agents 测试 recipe：启动本次 web 服务并用隔离浏览器资料目录打开。
+# dsh-codex-agents 测试 recipe：启动本次 web 服务并输出浏览器访问地址。
 #
 # 用法（仓库根）：
-#   bash plan/dsh-codex-agents-test-recipe/start.sh
+#   BASE=/tmp/dca-test.实际目录 bash plan/dsh-codex-agents-test-recipe/start.sh
 #
-# 对应测试计划 v11 第 2.4 节。服务在本终端前台运行，Ctrl-C 结束；
-# 浏览器使用 $BASE/browser-profile，不复用日常资料目录。
+# 对应测试计划 v12 第 2.4 节。服务在本终端前台运行，Ctrl-C 结束；
+# 浏览器由执行工程师的现有工具管理，不规定资料目录。
 
 set -euo pipefail
 
@@ -15,10 +15,7 @@ fail() { printf '错误：%s\n' "$1" >&2; exit 1; }
 note() { printf '· %s\n' "$1"; }
 
 BASE="${BASE:-}"
-if [ -z "$BASE" ]; then
-  BASE="$(ls -dt /tmp/dca-test.* 2>/dev/null | head -1 || true)"
-  test -n "$BASE" || fail "找不到 /tmp/dca-test.*，请先执行 prepare.sh"
-fi
+test -n "$BASE" || fail "必须显式传入本次 prepare.sh 输出的 BASE 目录"
 # shellcheck disable=SC1091
 . "$BASE/logs/paths.env"
 

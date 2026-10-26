@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# dsh-codex-agents 测试 recipe：按测试计划 v11 第 4 节收尾。
+# dsh-codex-agents 测试 recipe：按测试计划 v12 第 4 节收尾。
 #
 # 用法（仓库根）：
-#   bash plan/dsh-codex-agents-test-recipe/cleanup.sh
-#   KEEP_BASE=1 bash plan/dsh-codex-agents-test-recipe/cleanup.sh
+#   BASE=/tmp/dca-test.实际目录 bash plan/dsh-codex-agents-test-recipe/cleanup.sh
 #
-# 只删除第 2.3 节确认由本次创建的两份全局角色文件，以及本次 BASE。
+# 只删除第 2.3 节确认由本次创建的两份全局角色文件，保留本次 BASE 和运行记录。
 # 不停止或重启任何日常应用或服务；其它已有角色保持原状。
 
 set -euo pipefail
@@ -13,10 +12,7 @@ set -euo pipefail
 note() { printf '· %s\n' "$1"; }
 
 BASE="${BASE:-}"
-if [ -z "$BASE" ]; then
-  BASE="$(ls -dt /tmp/dca-test.* 2>/dev/null | head -1 || true)"
-  test -n "$BASE" || { printf '没有可清理的目录\n'; exit 0; }
-fi
+test -n "$BASE" || { printf '错误：必须显式传入本次 prepare.sh 输出的 BASE 目录\n' >&2; exit 1; }
 test -d "$BASE" || { printf '目录不存在：%s\n' "$BASE"; exit 0; }
 test -f "$BASE/logs/paths.env" || { printf '缺少 %s，无法确认清理范围\n' "$BASE/logs/paths.env"; exit 1; }
 # shellcheck disable=SC1091
@@ -51,11 +47,6 @@ if [ -n "${GLOBAL_AGENTS:-}" ]; then
   done
 fi
 
-if [ "${KEEP_BASE:-0}" = "1" ]; then
-  note "按要求保留 ${BASE} 供复核"
-else
-  rm -rf "$BASE"
-  note "已删除 ${BASE}"
-fi
+note "保留 ${BASE} 及运行记录供复核"
 
 note "其它已有角色与日常应用未改动"

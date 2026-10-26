@@ -1,6 +1,6 @@
 # dsh-codex-agents 测试 recipe
 
-本目录是 `plan/dsh-codex-agents-test-plan.md` v11 的可执行部分，对应第 2 节准备与第 3 节执行。
+本目录是 `plan/dsh-codex-agents-test-plan.md` v12 的可执行部分，对应第 2 节准备与第 3 节执行。
 
 ## 入口选择
 
@@ -25,16 +25,16 @@
 | `prepare.sh` | 2.1—2.4 | 建隔离目录、复制凭据、写角色、打包安装、设 `maxDepth=2` |
 | `start.sh` | 2.4 | 启动 web 服务并输出地址，交给浏览器 MCP |
 | `static-check.sh` | 3 节 T4、T5/T7、T6 | 打印计划原句与相关代码位置，供人工判断 |
-| `cleanup.sh` | 4 节 | 停本次服务、删本次创建的两份全局角色与 `BASE` |
+| `cleanup.sh` | 4 节 | 停本次服务、删本次创建的两份全局角色；保留 `BASE` |
 
 `static-check.sh` 不做通过/失败判定，只把计划要求核对的原句和相关代码段摆出来。三项是否成立，按计划第 3 节原文由执行工程师判断并记录。它只读产品源码，不运行产品。
 
 ## 执行顺序
 
 ```bash
-# 1. 准备（建议显式传 BASE 避免多轮混淆；不传则取 /tmp/dca-test.* 最新一个）
+# 1. 准备，记录输出的实际测试目录
 bash plan/dsh-codex-agents-test-recipe/prepare.sh
-# 记下输出的 BASE，后面都用它
+export BASE="/tmp/dca-test.实际目录"  # 填入上一步输出的真实路径；后续必须显式传入
 
 # 2. 打印源码检查材料（T4、T5/T7 共享、T6 的插件侧责任）
 bash plan/dsh-codex-agents-test-recipe/static-check.sh
@@ -66,9 +66,9 @@ bash plan/dsh-codex-agents-test-recipe/cleanup.sh
 
 浏览器完全交给执行工程师的 MCP：本 recipe 不启动浏览器、不指定资料目录、不处理首次运行提示，也不结束浏览器进程。`start.sh` 只负责把地址写到 `$BASE/logs/web.url` 并打印出来。
 
-计划第 4 节「关闭本次临时浏览器窗口」由执行工程师通过 MCP 完成。`cleanup.sh` 只停本次 web 服务、删本次创建的两份全局角色与 `$BASE`。
+计划第 4 节「关闭本次测试网页」由执行工程师完成。`cleanup.sh` 只停本次 web 服务、删本次创建的两份全局角色，保留 `$BASE` 供审核。
 
-`BASE` 从 `prepare.sh` 输出读取，或取 `/tmp/dca-test.*` 最新一个。
+`BASE` 必须由执行工程师按 `prepare.sh` 输出明确指定，脚本不再自动选择最新目录。
 
 ## 证据位置
 
@@ -98,7 +98,7 @@ T1—T7 的业务结果尚未正式执行，按计划第 4 节表格由本地执
 ## 已知限制
 
 - 全局角色写在当前账户的 `$HOME/.codex/agents/`。`prepare.sh` 同时检查文件名与 TOML 里的 `name`，任一冲突就失败，不覆盖；需先改名再重跑。角色名冲突会让 T2、T3 的场景输入失真，不能只改文件名绕过。
-- 多轮测试会留下多个 `/tmp/dca-test.*`。不传 `BASE` 时取最新一个，建议每次都显式传 `BASE=`。
+- 多轮测试会留下多个 `/tmp/dca-test.*`。每次启动或清理必须使用对应的 `BASE`，不自动选最新目录。
 - 会话目录名由工作区绝对路径转义而来，路径含空格时需另行处理。
 - `start.sh` 前台等待服务进程；结束用 Ctrl-C 或 `kill "$(cat $BASE/logs/web.pid)"`。
 - 浏览器 MCP 是否可用由执行工程师确认；不可用时把地址手动粘到浏览器，界面操作改由人工完成。
