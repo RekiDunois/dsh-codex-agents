@@ -1,6 +1,6 @@
 # dsh-codex-agents 测试 recipe
 
-本目录是 `plan/dsh-codex-agents-test-plan.md` v12 的可执行部分，对应第 2 节准备与第 3 节执行。
+本目录是 `plan/dsh-codex-agents-test-plan.md` v13 的可执行部分，对应第 2 节准备与第 3 节执行。
 
 ## 入口选择
 
@@ -32,7 +32,7 @@
 ## 执行顺序
 
 ```bash
-# 1. 准备，记录输出的实际测试目录
+# 1. 首次准备（已有适用的隔离安装则跳过本步骤），记录实际测试目录
 bash plan/dsh-codex-agents-test-recipe/prepare.sh
 export BASE="/tmp/dca-test.实际目录"  # 填入上一步输出的真实路径；后续必须显式传入
 
@@ -53,6 +53,28 @@ bash plan/dsh-codex-agents-test-recipe/start.sh
 # 5. 通过 MCP 关闭本次页面，然后收尾
 bash plan/dsh-codex-agents-test-recipe/cleanup.sh
 ```
+
+
+## 复用已有隔离安装
+
+对照[正式测试计划第 2.5 节](../dsh-codex-agents-test-plan.md)复用仍适用的 `BASE`。已有有效通过结果直接引用；产品行为改变、确需测试新包时，才从受影响的产品提交重新创建干净消费者。
+
+1. 从第一次 `prepare.sh` 的输出取得实际 `BASE`；按第 2.5 节读取 `$BASE/logs/paths.env`，确认原安装包及网页配置仍在。
+2. 按测试计划第 2.3 节的**原命令**恢复三份项目角色文件和上次 `cleanup.sh` 删除的两份全局角色文件；先执行其中的全局文件冲突检查，不覆盖用户原有文件。删除本次隔离工作区里 T7 遗留的 `extra.toml`，使 T1 能从 `MARKER_OLD` 开始。
+3. 直接启动原安装，按受影响的必测项创建本轮会话并执行。**不要再调用 `prepare.sh`、打包或安装插件。**
+
+```bash
+export BASE="/tmp/dca-test.实际目录"  # 使用之前记录的真实路径
+test -f "$BASE/logs/paths.env" || exit 1
+. "$BASE/logs/paths.env"
+test -s "$PKG" && test -f "$PROFILE/cordis.patch.yml" || exit 1
+rm -f "$BASE/consumer-a/.codex/agents/extra.toml"
+
+# 此处按测试计划第 2.3 节重做角色文件创建命令。
+bash plan/dsh-codex-agents-test-recipe/start.sh
+```
+
+沿用 `$BASE` 内现有工作区、模型与 `maxDepth` 设置；仅恢复本轮必测所需的可变输入。执行记录注明复用的 `BASE`、`SOURCE_SHA`、正式安装包和已有结果来源。本轮结束仍使用 `cleanup.sh`，保留运行记录。
 
 ## 模型配置
 
