@@ -32,10 +32,12 @@ if test -f "$MCP_CONFIG"; then
   note "检测到浏览器 MCP 配置：${MCP_CONFIG}（内容由执行工程师提供，本脚本不解释）"
 fi
 
-# 服务在后台启动，等地址出现；地址含访问凭据，只在本机使用
+# 服务在后台启动，等地址出现；地址含访问凭据，只在本机使用。
+# 子 shell 用 exec 换成真正的 dsh 进程，$! 才是服务本身而不是包装 shell，
+# 否则 cleanup.sh 记到的进程号既杀不掉服务，也无法用它核对身份。
 LOG="$BASE/logs/web.log"
 : > "$LOG"
-( cd "$BASE/consumer-a" && DSH_HOME="$BASE/home" "$DSH_BIN" web --no-open --host 127.0.0.1 --port 0 ) \
+( cd "$BASE/consumer-a" && exec env DSH_HOME="$BASE/home" "$DSH_BIN" web --no-open --host 127.0.0.1 --port 0 ) \
   > "$LOG" 2>&1 &
 PID=$!
 printf '%s\n' "$PID" > "$BASE/logs/web.pid"

@@ -162,7 +162,7 @@ cat <<TXT
   export BASE="${BASE}"
 
 后续按顺序：
-  bash plan/dsh-codex-agents-test-recipe/start.sh    # 启动 web 服务并打开隔离浏览器
+  bash plan/dsh-codex-agents-test-recipe/start.sh    # 启动 web 服务并输出地址，浏览器交给 MCP
   bash plan/dsh-codex-agents-test-recipe/static-check.sh
   （在网页里登记两个工作区、建会话，然后按第 3 节执行 T1—T7）
   bash plan/dsh-codex-agents-test-recipe/cleanup.sh
