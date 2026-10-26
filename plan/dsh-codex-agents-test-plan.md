@@ -1,11 +1,11 @@
 # dsh-codex-agents 测试计划
 
-- 版本：v12
+- 版本：v13
 - 日期：2026-10-26
 - 状态：已修订，待独立复核；未进行正式测试
 - 目标：PR #1 已确认的六条业务成功标准，以及 `plan/dsh-codex-agents.md` v12（产品设计沿用已批准的 v11）
 - 目标宿主参考版本：`@deepseek-ai/dsh-desktop-runtime@0.2.1-rc.3`，参考源码 `deepseek-ai/deepseek-harness@22ddee3792402c3e70ec5f86a63c3e3e895a2f60`；正式执行只记录实际版本及适用性
-- 本版调整：保留 T1—T7；正式入口采用宿主网页配置档，在当前 macOS 账户运行，`HOME` 不变，仅隔离本次 `DSH_HOME` 与测试工作区。取消独立浏览器资料目录要求；测试结束保留本次运行记录。目录监听仍只作一次生产源码检查。
+- 本版调整：沿用 v12 的网页入口、当前账户 `HOME`、隔离 `DSH_HOME` 与测试工作区、不单独管理浏览器资料目录及保留运行记录的约定；第 2.5 节补齐复用已有隔离安装时恢复测试输入的步骤。T1—T7、检查方式与范围不变。
 
 ## 1. 必测清单
 
@@ -170,6 +170,27 @@ DSH_HOME="$BASE/home" "$DSH_BIN" web --no-open --host 127.0.0.1 --port 0
 
 依据：[官方网页运行参数与会话](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/bundle/web-app/README.zh.md)、[CLI 配置档及插件安装说明](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/apps/cli/README.zh.md)。
 
+
+### 2.5 复用已有隔离安装
+
+已有安装仍适用于待检查的业务行为、配置与宿主版本，且确需重新执行受影响的必测项时，复用上次的 `BASE`。已取得当前有效通过结果的项目直接引用原记录，不因产品提交编号变化而重跑；若新产品提交实际改变受影响项，则从新提交经第 2.4 节正式安装生成新消费者，不能用旧包代替新版本。
+
+```bash
+# 填写上次 prepare.sh 实际输出的目录；不要再次执行 prepare.sh。
+export BASE="/tmp/dca-test.实际目录"
+test -f "$BASE/logs/paths.env" || exit 1
+. "$BASE/logs/paths.env"
+test -s "$PKG" || exit 1
+test -f "$PROFILE/cordis.patch.yml" || exit 1
+
+# T7 创建的文件只在本次隔离工作区中清理；角色正文按第 2.3 节恢复。
+rm -f "$BASE/consumer-a/.codex/agents/extra.toml"
+```
+
+随后**只重做第 2.3 节创建测试角色的命令**：甲 `reviewer` 恢复 `MARKER_OLD`，乙 `reviewer` 和 `beta_only` 恢复原始内容；全局 `reviewer` 与 `global_only` 若已由上次 `cleanup.sh` 删除，则按该节的文件冲突检查后重新创建。不得覆盖用户已有全局角色；发生冲突时沿用第 2.3 节的更名约定。这里仅重置测试输入，不重新创建 `BASE`，也不运行 `npm install`、`npm pack` 或 `dsh plugin add`。
+
+从仓库根目录直接执行 `bash plan/dsh-codex-agents-test-recipe/start.sh`；复用原工作区登记和网页配置，按需要建立本轮新会话，只检查确实受影响的 T1—T7 项目。T5、T7 所需的前后调用仍在各自规定的同一会话内完成。记录复用的 `BASE`、`SOURCE_SHA`、安装包、配置及原通过结果来源。
+
 ## 3. 执行 T1—T7
 
 **T4（静态部分，先看一次）**：在本次被测产品源码中沿 `src/index.ts` 顶层 `apply` 的直接初始化路径检查：不得同步逐工作区读角色 TOML，也不得等待所有预设注册完成才返回。允许注册工具、订阅工作区变化、调度后台刷新。随后复用 T1 第一次正常委派说明工具可用，不计时、不模拟大量角色文件。仅据启动服务成功不能判 T4 通过。
@@ -220,4 +241,4 @@ developer_instructions = """
 
 执行记录同时写明产品提交 `SOURCE_SHA`、正式包路径、实际 DSH 网页运行时版本、隔离的 `DSH_HOME` 与 `BASE`、生效提供方／模型及必要的配置覆盖、正式尝试与失败原因。配置和输出只保存检查这些业务目标所需的部分。
 
-**交接**：本文件是 v12 完整待审候选，未由编写者自行批准第一、第二关口。由独立测试计划审核者核对上述目标覆盖和可执行性，随后本地测试工程师在已隔离的网页配置档准备及接线，执行工程师运行并记录正式结果。没有独立子代理复核，不将本次自查写为独立批准。
+**交接**：本文件是 v13 完整待审候选，未由编写者自行批准第一、第二关口。由独立测试计划审核者核对上述目标覆盖和可执行性，随后本地测试工程师在已隔离的网页配置档准备及接线，执行工程师运行并记录正式结果。没有独立子代理复核，不将本次自查写为独立批准。
