@@ -11,8 +11,8 @@ import type { Context, Logger } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import type {} from '@deepseek-ai/dsh-storage-domain'
 import { parseAgentToml as parseToml } from './toml.js'
-import { formatAvailable, mergeRoster } from './roster.js'
-import type { RosterRole, RoleSource, SourceRoster } from './roster.js'
+import { formatAvailable, mergeRoster, resolveRole } from './roster.js'
+import type { DeclaredRole, OpaqueRoleFile, RosterRole, RoleSource, SourceRoster } from './roster.js'
 import { presetDefinition, presetIdFor, roleKey } from './preset.js'
 import { RoleDirectoryWatcher } from './watch.js'
 import { currentWorkspaceSources, globalRoleSource, resolveCallerWorkspace, sourceId } from './workspaces.js'
@@ -41,7 +41,12 @@ interface RoleRecord extends RosterRole {
 interface SourceState {
   source: RoleSource
   readonly records: Map<string, RoleRecord>
-  conflicts: Map<string, readonly string[]>
+  /** Every name this directory declares, usable or not. */
+  declared: Map<string, DeclaredRole>
+  /** Files whose declared name cannot be determined. */
+  opaque: Map<string, OpaqueRoleFile>
+  /** Last name each path parsed successfully, used to keep a broken file's name owned. */
+  readonly trustedNames: Map<string, string>
   errors: Map<string, string>
   pending: boolean
   disposed: boolean
@@ -186,10 +191,12 @@ export class RoleManager {
         projectState === undefined ? undefined : this.snapshot(projectState),
         this.snapshot(globalState),
       )
-      const role = roster.roles.get(agentType)
-      if (role === undefined) {
+      const resolution = resolveRole(roster, agentType)
+      if (resolution.kind === 'project-error') throw new Error(resolution.message)
+      if (resolution.kind === 'unknown') {
         throw new Error(`Unknown agent_type "${agentType}". Available: ${formatAvailable(roster)}`)
       }
+      const role = resolution.role
       const key = roleKey(role.source.scope, role.source.dir, role.name)
       return await this.withRoleLock(key, async () => {
         const state = this.states.get(sourceId(role.source))
@@ -284,61 +291,115 @@ export class RoleManager {
         .sort()
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code
-      if (code === 'ENOENT' || code === 'ENOTDIR') {
-        fileNames = []
-      } else {
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
         // An unreadable directory is not evidence that its old roles are still current.
         for (const name of [...state.records.keys()]) {
           const record = state.records.get(name)
           if (record !== undefined) await this.removeRecord(state, record)
         }
+        state.declared = new Map()
+        state.opaque = new Map()
+        state.trustedNames.clear()
         throw error
       }
+      fileNames = []
     }
 
-    const declared = new Map<string, ParsedRole[]>()
-    const errors = new Map<string, string>()
+    state.errors.clear()
+    const parsed = new Map<string, ParsedRole[]>()
+    const brokenByName = new Map<string, string[]>()
+    const opaque = new Map<string, OpaqueRoleFile>()
+    const present = new Set<string>()
+
     for (const fileName of fileNames) {
       const file = join(state.source.dir, fileName)
+      present.add(file)
       let text: string
       try {
         text = await readFile(file, 'utf8')
       } catch (error) {
-        errors.set(file, (error as Error).message)
+        this.noteBrokenFile(state, file, (error as Error).message, brokenByName, opaque)
         continue
       }
       try {
         const definition = parseToml(text, file)
-        const list = declared.get(definition.name) ?? []
+        state.trustedNames.set(file, definition.name)
+        const list = parsed.get(definition.name) ?? []
         list.push({ file, contentHash: hashText(text), definition })
-        declared.set(definition.name, list)
+        parsed.set(definition.name, list)
       } catch (error) {
-        errors.set(file, (error as Error).message)
+        this.noteBrokenFile(state, file, (error as Error).message, brokenByName, opaque)
       }
     }
+    for (const file of [...state.trustedNames.keys()]) {
+      if (!present.has(file)) state.trustedNames.delete(file)
+    }
 
-    const parsed = new Map<string, ParsedRole>()
-    const conflicts = new Map<string, readonly string[]>()
-    for (const [name, list] of declared) {
-      if (list.length > 1) {
-        conflicts.set(name, list.map(entry => entry.file))
-        for (const entry of list) this.log.warn(`${entry.file}: duplicate role name "${name}" in one directory; role hidden`)
-      } else if (list[0] !== undefined) {
-        parsed.set(name, list[0])
+    const candidates = new Map<string, ParsedRole>()
+    const declared = new Map<string, DeclaredRole>()
+    for (const name of new Set([...parsed.keys(), ...brokenByName.keys()])) {
+      const valid = parsed.get(name) ?? []
+      const broken = brokenByName.get(name) ?? []
+      const files = [...valid.map(entry => entry.file), ...broken]
+      if (valid.length === 1 && broken.length === 0) {
+        candidates.set(name, valid[0] as ParsedRole)
+        declared.set(name, { files })
+        continue
       }
+      let reason: string
+      if (valid.length > 1) {
+        reason = `duplicate role name "${name}" in one directory; role hidden`
+        for (const entry of valid) this.log.warn(`${entry.file}: ${reason}`)
+      } else if (valid.length === 1) {
+        reason = `role name "${name}" is declared by ${files.join(', ')}; one file could not be read`
+      } else if (broken[0] !== undefined) {
+        reason = `${broken[0]}: ${state.errors.get(broken[0]) ?? 'role could not be read'}`
+      } else {
+        reason = `role name "${name}" is not available`
+      }
+      declared.set(name, { files, error: reason })
     }
 
     for (const [name, record] of [...state.records]) {
-      if (!parsed.has(name)) await this.removeRecord(state, record)
+      if (!candidates.has(name)) await this.removeRecord(state, record)
     }
-    for (const [name, next] of parsed) {
+    for (const [name, next] of candidates) {
       const record = state.records.get(name)
       if (record !== undefined && record.contentHash === next.contentHash) continue
       if (record === undefined) await this.installRecord(state, next)
       else await this.replaceRecord(state, record, next)
     }
-    state.conflicts = conflicts
-    state.errors = errors
+
+    // A declared name whose preset could not be mounted stays owned by this
+    // directory, so callers see the project file error instead of a global role.
+    for (const [name, next] of candidates) {
+      if (state.records.has(name)) continue
+      const entry = declared.get(name) ?? { files: [next.file] }
+      const reason = state.errors.get(next.file) ?? 'role preset is not available'
+      declared.set(name, { files: entry.files, error: entry.error ?? `${next.file}: ${reason}` })
+    }
+
+    state.declared = declared
+    state.opaque = opaque
+  }
+
+  /** Record one file that could not be read or parsed, keeping its trusted name owned. */
+  private noteBrokenFile(
+    state: SourceState,
+    file: string,
+    reason: string,
+    brokenByName: Map<string, string[]>,
+    opaque: Map<string, OpaqueRoleFile>,
+  ): void {
+    state.errors.set(file, reason)
+    const trusted = state.trustedNames.get(file)
+    if (trusted === undefined) {
+      opaque.set(file, { file, reason })
+      return
+    }
+    const list = brokenByName.get(trusted) ?? []
+    list.push(file)
+    brokenByName.set(trusted, list)
   }
 
   /** Register a role file that currently has no record. */
@@ -406,7 +467,9 @@ export class RoleManager {
       const resolved = await this.ctx.agentPresets.resolve(presetId)
       if (resolved.broken !== undefined) {
         await dispose()
-        this.log.warn(`preset ${presetId} is unusable: ${resolved.broken}`)
+        const message = `preset ${presetId} is unusable: ${resolved.broken}`
+        state.errors.set(next.file, message)
+        this.log.warn(message)
         return undefined
       }
     } catch (error) {
@@ -433,11 +496,12 @@ export class RoleManager {
     }
   }
 
-  /** Snapshot one source's usable roles for merging. */
+  /** Snapshot one source's usable roles and declared names for merging. */
   private snapshot(state: SourceState): SourceRoster {
     return {
       roles: new Map(state.records),
-      conflicts: state.conflicts,
+      declared: new Map(state.declared),
+      opaque: [...state.opaque.values()],
     }
   }
 
@@ -449,7 +513,9 @@ export class RoleManager {
       state = {
         source,
         records: new Map(),
-        conflicts: new Map(),
+        declared: new Map(),
+        opaque: new Map(),
+        trustedNames: new Map(),
         errors: new Map(),
         pending: false,
         disposed: false,

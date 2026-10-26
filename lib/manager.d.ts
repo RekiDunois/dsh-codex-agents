@@ -72,6 +72,8 @@ export declare class RoleManager {
     private refreshSource;
     /** Read the directory, parse role files, and reconcile records. */
     private refreshSourceNow;
+    /** Record one file that could not be read or parsed, keeping its trusted name owned. */
+    private noteBrokenFile;
     /** Register a role file that currently has no record. */
     private installRecord;
     /** Replace a changed role file while keeping its preset id. */
@@ -84,7 +86,7 @@ export declare class RoleManager {
     private createRecord;
     /** Dispose one record, reporting but not propagating teardown failures. */
     private disposeRecord;
-    /** Snapshot one source's usable roles for merging. */
+    /** Snapshot one source's usable roles and declared names for merging. */
     private snapshot;
     /** Get or create the state for a source. */
     private stateFor;

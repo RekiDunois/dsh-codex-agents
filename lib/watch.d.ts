@@ -1,14 +1,20 @@
 /**
- * Directory watches for role sources, with rebinding when `.codex/agents`
- * appears, disappears, or is atomically replaced.
+ * Directory watches for role sources. Every existing level of the role path is
+ * watched at once (workspace root or user home, `.codex`, `agents`), so a
+ * deleted and recreated subdirectory is noticed through its parent instead of
+ * relying on one binding that may still point at the old directory node.
  * @module dsh-codex-agents/watch
  */
 import type { RoleSource } from './roster.js';
 /**
- * Watches each role directory as a whole. A missing target is tracked through
- * its nearest existing ancestor until the target exists, then the watch moves
- * down; a vanished target is traced back up the same way. Events only mark a
- * directory dirty — content comparison still happens in the manager.
+ * Watches the whole directory chain of each role source.
+ *
+ * The chain is `<root>`, `<root>/.codex`, `<root>/.codex/agents`, where `root`
+ * is the registered workspace or the user home. Parent levels stay watched
+ * while children exist, so removing or recreating `.codex/agents` is observed
+ * by the parent and the child binding is rebuilt. A binding is considered
+ * current only when the directory identity (device and inode) still matches;
+ * path equality alone would accept a stale watcher after a replacement.
  */
 export declare class RoleDirectoryWatcher {
     private readonly onChange;
@@ -27,14 +33,14 @@ export declare class RoleDirectoryWatcher {
     sync(sources: readonly RoleSource[]): void;
     /** Stop every watch and pending debounce. */
     close(): void;
-    /** Ensure the entry watches its target directory, or its nearest existing ancestor. */
-    private ensure;
-    /** Nearest existing directory from the target up to the source's boundary. */
-    private nearestExisting;
-    /** Debounce one refresh and rebind after the directory layout may have changed. */
+    /** Watch every existing level of one source, rebinding replaced directories. */
+    private rebind;
+    /** Keep one level watched when it is a current directory; otherwise drop it. */
+    private ensureLevel;
+    /** Debounce one refresh, then rebuild the chain from the current directories. */
     private schedule;
-    /** Close only the current watcher, retaining the entry for rebinding. */
-    private stopWatcher;
-    /** Close the watcher, pending debounce, and entry. */
+    /** Close only the watch for one level, retaining the entry for rebinding. */
+    private closeLevel;
+    /** Close every watch, pending debounce, and the entry. */
     private disposeEntry;
 }
